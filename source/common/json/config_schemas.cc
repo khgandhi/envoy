@@ -1040,7 +1040,7 @@ const std::string Json::Schema::CLUSTER_SCHEMA(R"EOF(
         "properties" : {
           "type" : {
             "type" : "string",
-            "enum" : ["http", "tcp"]
+            "enum" : ["http", "redis", "tcp"]
           },
           "timeout_ms" : {
             "type" : "integer",

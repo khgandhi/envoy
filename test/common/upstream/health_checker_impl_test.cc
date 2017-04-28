@@ -12,6 +12,7 @@
 
 #include "test/common/http/common.h"
 #include "test/mocks/network/mocks.h"
+#include "test/mocks/redis/mocks.h"
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/upstream/mocks.h"
 #include "test/test_common/printers.h"
@@ -21,11 +22,14 @@
 #include "gtest/gtest.h"
 
 using testing::_;
+using testing::DoAll;
+using testing::InSequence;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
 using testing::SaveArg;
+using testing::WithArg;
 
 namespace Upstream {
 
@@ -105,8 +109,8 @@ public:
     TestSessionPtr new_test_session(new TestSession());
     test_sessions_.emplace_back(std::move(new_test_session));
     TestSession& test_session = *test_sessions_.back();
-    test_session.timeout_timer_ = new NiceMock<Event::MockTimer>(&dispatcher_);
-    test_session.interval_timer_ = new NiceMock<Event::MockTimer>(&dispatcher_);
+    test_session.timeout_timer_ = new Event::MockTimer(&dispatcher_);
+    test_session.interval_timer_ = new Event::MockTimer(&dispatcher_);
     expectClientCreate(test_sessions_.size() - 1);
   }
 
@@ -615,8 +619,8 @@ public:
   }
 
   void expectSessionCreate() {
-    timeout_timer_ = new NiceMock<Event::MockTimer>(&dispatcher_);
-    interval_timer_ = new NiceMock<Event::MockTimer>(&dispatcher_);
+    timeout_timer_ = new Event::MockTimer(&dispatcher_);
+    interval_timer_ = new Event::MockTimer(&dispatcher_);
   }
 
   void expectClientCreate() {
@@ -685,6 +689,74 @@ TEST_F(TcpHealthCheckerImplTest, Timeout) {
   cluster_->hosts_.clear();
   EXPECT_CALL(*connection_, close(_));
   cluster_->runCallbacks({}, removed);
+}
+
+class RedisHealthCheckerImplTest : public testing::Test, public Redis::ConnPool::ClientFactory {
+public:
+  RedisHealthCheckerImplTest() : cluster_(new NiceMock<MockCluster>()) {
+    std::string json = R"EOF(
+    {
+      "type": "redis",
+      "timeout_ms": 1000,
+      "interval_ms": 1000,
+      "unhealthy_threshold": 1,
+      "healthy_threshold": 1
+    }
+    )EOF";
+
+    Json::ObjectPtr config = Json::Factory::loadFromString(json);
+    health_checker_.reset(
+        new RedisHealthCheckerImpl(*cluster_, *config, dispatcher_, runtime_, random_, *this));
+  }
+
+  Redis::ConnPool::ClientPtr create(Upstream::HostConstSharedPtr, Event::Dispatcher&,
+                                    const Redis::ConnPool::Config&) override {
+    return Redis::ConnPool::ClientPtr{create_()};
+  }
+
+  MOCK_METHOD0(create_, Redis::ConnPool::Client*());
+
+  void expectSessionCreate() {
+    timeout_timer_ = new Event::MockTimer(&dispatcher_);
+    interval_timer_ = new Event::MockTimer(&dispatcher_);
+  }
+
+  void expectClientCreate() {
+    client_ = new Redis::ConnPool::MockClient();
+    EXPECT_CALL(*this, create_()).WillOnce(Return(client_));
+    // fixfix expect ping
+    EXPECT_CALL(*client_, makeRequest(_, _))
+        .WillOnce(DoAll(WithArg<1>(SaveArgAddress(&pool_callbacks_)), Return(&pool_request_)));
+  }
+
+  std::shared_ptr<MockCluster> cluster_;
+  Event::MockDispatcher dispatcher_;
+  NiceMock<Runtime::MockLoader> runtime_;
+  NiceMock<Runtime::MockRandomGenerator> random_;
+  Event::MockTimer* timeout_timer_{};
+  Event::MockTimer* interval_timer_{};
+  Redis::ConnPool::MockClient* client_{};
+  Redis::ConnPool::MockPoolRequest pool_request_;
+  Redis::ConnPool::PoolCallbacks* pool_callbacks_{};
+  std::unique_ptr<RedisHealthCheckerImpl> health_checker_;
+};
+
+TEST_F(RedisHealthCheckerImplTest, SuccessAndFail) {
+  InSequence s;
+
+  cluster_->hosts_ = {HostSharedPtr{new HostImpl(
+      cluster_->info_, "", Network::Utility::resolveUrl("tcp://127.0.0.1:80"), false, 1, "")}};
+
+  expectSessionCreate();
+  expectClientCreate();
+  health_checker_->start();
+
+  EXPECT_CALL(*timeout_timer_, disableTimer());
+  EXPECT_CALL(*interval_timer_, enableTimer(_));
+  Redis::RespValuePtr response(new Redis::RespValue());
+  response->type(Redis::RespType::BulkString);
+  response->asString() = "PONG";
+  pool_callbacks_->onResponse(std::move(response));
 }
 
 } // Upstream

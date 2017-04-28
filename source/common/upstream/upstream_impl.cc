@@ -21,6 +21,7 @@
 #include "common/json/json_loader.h"
 #include "common/network/address_impl.h"
 #include "common/network/utility.h"
+#include "common/redis/conn_pool_impl.h"
 #include "common/ssl/connection_impl.h"
 #include "common/ssl/context_config_impl.h"
 #include "common/upstream/health_checker_impl.h"
@@ -122,15 +123,14 @@ ClusterPtr ClusterImplBase::create(const Json::Object& cluster, ClusterManager& 
   } else if (string_type == "logical_dns") {
     new_cluster.reset(new LogicalDnsCluster(cluster, runtime, stats, ssl_context_manager,
                                             dns_resolver, tls, dispatcher));
-  } else if (string_type == "sds") {
+  } else {
+    ASSERT(string_type == "sds");
     if (!sds_config.valid()) {
       throw EnvoyException("cannot create an sds cluster without an sds config");
     }
 
     new_cluster.reset(new SdsClusterImpl(cluster, runtime, stats, ssl_context_manager,
                                          sds_config.value(), local_info, cm, dispatcher, random));
-  } else {
-    throw EnvoyException(fmt::format("cluster: unknown cluster type '{}'", string_type));
   }
 
   if (cluster.hasObject("health_check")) {
@@ -143,7 +143,10 @@ ClusterPtr ClusterImplBase::create(const Json::Object& cluster, ClusterManager& 
       new_cluster->setHealthChecker(HealthCheckerPtr{new TcpHealthCheckerImpl(
           *new_cluster, *health_check_config, dispatcher, runtime, random)});
     } else {
-      throw EnvoyException(fmt::format("cluster: unknown health check type '{}'", hc_type));
+      ASSERT(hc_type == "redis");
+      new_cluster->setHealthChecker(HealthCheckerPtr{
+          new RedisHealthCheckerImpl(*new_cluster, *health_check_config, dispatcher, runtime,
+                                     random, Redis::ConnPool::ClientFactoryImpl::instance_)});
     }
   }
 

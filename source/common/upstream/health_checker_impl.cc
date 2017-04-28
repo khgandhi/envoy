@@ -84,6 +84,20 @@ std::chrono::milliseconds HealthCheckerImplBase::interval() {
   return std::chrono::milliseconds(final_ms);
 }
 
+void HealthCheckerImplBase::onClusterMemberUpdate(const std::vector<HostSharedPtr>& hosts_added,
+                                                  const std::vector<HostSharedPtr>& hosts_removed) {
+  for (const HostSharedPtr& host : hosts_added) {
+    active_sessions_[host] = makeSession(host);
+    active_sessions_[host]->start(); // fixfix dup
+  }
+
+  for (const HostSharedPtr& host : hosts_removed) {
+    auto session_iter = active_sessions_.find(host);
+    ASSERT(active_sessions_.end() != session_iter);
+    active_sessions_.erase(session_iter);
+  }
+}
+
 void HealthCheckerImplBase::refreshHealthyStat() {
   // Each hot restarted process health checks independently. To make the stats easier to read,
   // we assume that both processes will converge and the last one that writes wins for the host.
@@ -102,11 +116,18 @@ void HealthCheckerImplBase::runCallbacks(HostSharedPtr host, bool changed_state)
   }
 }
 
+void HealthCheckerImplBase::start() {
+  for (const HostSharedPtr& host : cluster_.hosts()) {
+    active_sessions_[host] = makeSession(host);
+    active_sessions_[host]->start();
+  }
+}
+
 HealthCheckerImplBase::ActiveHealthCheckSession::ActiveHealthCheckSession(
     HealthCheckerImplBase& parent, HostSharedPtr host)
-    : parent_(parent), host_(host),
-      interval_timer_(parent.dispatcher_.createTimer([this]() -> void { onInterval(); })),
-      timeout_timer_(parent.dispatcher_.createTimer([this]() -> void { onTimeout(); })) {
+    : host_(host), parent_(parent),
+      interval_timer_(parent.dispatcher_.createTimer([this]() -> void { onIntervalBase(); })),
+      timeout_timer_(parent.dispatcher_.createTimer([this]() -> void { onTimeoutBase(); })) {
 
   if (!host->healthFlagGet(Host::HealthFlag::FAILED_ACTIVE_HC)) {
     parent.incHealthy();
@@ -138,15 +159,18 @@ void HealthCheckerImplBase::ActiveHealthCheckSession::handleSuccess() {
   parent_.stats_.success_.inc();
   first_check_ = false;
   parent_.runCallbacks(host_, changed_state);
+
+  timeout_timer_->disableTimer();
+  interval_timer_->enableTimer(parent_.interval());
 }
 
-void HealthCheckerImplBase::ActiveHealthCheckSession::handleFailure(bool timeout) {
+void HealthCheckerImplBase::ActiveHealthCheckSession::handleFailure(bool network_failure) {
   // If we are unhealthy, reset the # of healthy to zero.
   num_healthy_ = 0;
 
   bool changed_state = false;
   if (!host_->healthFlagGet(Host::HealthFlag::FAILED_ACTIVE_HC)) {
-    if (!timeout || ++num_unhealthy_ == parent_.unhealthy_threshold_) {
+    if (!network_failure || ++num_unhealthy_ == parent_.unhealthy_threshold_) {
       host_->healthFlagSet(Host::HealthFlag::FAILED_ACTIVE_HC);
       parent_.decHealthy();
       changed_state = true;
@@ -154,12 +178,25 @@ void HealthCheckerImplBase::ActiveHealthCheckSession::handleFailure(bool timeout
   }
 
   parent_.stats_.failure_.inc();
-  if (timeout) {
-    parent_.stats_.timeout_.inc();
+  if (network_failure) {
+    parent_.stats_.network_failure_.inc();
   }
 
   first_check_ = false;
   parent_.runCallbacks(host_, changed_state);
+
+  timeout_timer_->disableTimer();
+  interval_timer_->enableTimer(parent_.interval());
+}
+
+void HealthCheckerImplBase::ActiveHealthCheckSession::onIntervalBase() {
+  onInterval();
+  timeout_timer_->enableTimer(parent_.timeout_);
+}
+
+void HealthCheckerImplBase::ActiveHealthCheckSession::onTimeoutBase() {
+  onTimeout();
+  handleFailure(true);
 }
 
 HttpHealthCheckerImpl::HttpHealthCheckerImpl(const Cluster& cluster, const Json::Object& config,
@@ -173,30 +210,9 @@ HttpHealthCheckerImpl::HttpHealthCheckerImpl(const Cluster& cluster, const Json:
   }
 }
 
-void HttpHealthCheckerImpl::onClusterMemberUpdate(const std::vector<HostSharedPtr>& hosts_added,
-                                                  const std::vector<HostSharedPtr>& hosts_removed) {
-  for (const HostSharedPtr& host : hosts_added) {
-    active_sessions_[host].reset(new HttpActiveHealthCheckSession(*this, host));
-  }
-
-  for (const HostSharedPtr& host : hosts_removed) {
-    auto session_iter = active_sessions_.find(host);
-    ASSERT(active_sessions_.end() != session_iter);
-    active_sessions_.erase(session_iter);
-  }
-}
-
-void HttpHealthCheckerImpl::start() {
-  for (const HostSharedPtr& host : cluster_.hosts()) {
-    active_sessions_[host].reset(new HttpActiveHealthCheckSession(*this, host));
-  }
-}
-
 HttpHealthCheckerImpl::HttpActiveHealthCheckSession::HttpActiveHealthCheckSession(
     HttpHealthCheckerImpl& parent, HostSharedPtr host)
-    : ActiveHealthCheckSession(parent, host), parent_(parent) {
-  onInterval();
-}
+    : ActiveHealthCheckSession(parent, host), parent_(parent) {}
 
 HttpHealthCheckerImpl::HttpActiveHealthCheckSession::~HttpActiveHealthCheckSession() {
   if (client_) {
@@ -246,8 +262,6 @@ void HttpHealthCheckerImpl::HttpActiveHealthCheckSession::onInterval() {
 
   request_encoder_->encodeHeaders(request_headers, true);
   request_encoder_ = nullptr;
-
-  timeout_timer_->enableTimer(parent_.timeout_);
 }
 
 void HttpHealthCheckerImpl::HttpActiveHealthCheckSession::onResetStream(Http::StreamResetReason) {
@@ -255,20 +269,13 @@ void HttpHealthCheckerImpl::HttpActiveHealthCheckSession::onResetStream(Http::St
     return;
   }
 
-  timeout_timer_->disableTimer();
   conn_log_debug("connection/stream error health_flags={}", *client_,
                  HostUtility::healthFlagsToString(*host_));
   handleFailure(true);
-  interval_timer_->enableTimer(parent_.interval());
 }
 
 bool HttpHealthCheckerImpl::HttpActiveHealthCheckSession::isHealthCheckSucceeded() {
   uint64_t response_code = Http::Utility::getResponseStatus(*response_headers_);
-
-  // If the host is currently unhealthy, we need to see if we have reached the healthy count. If
-  // the host is healthy, we need to see if we have reached the unhealthy count. If a host returns
-  // a response code other than 200 we ignore the number of unhealthy and immediately set it to
-  // unhealthy.
   conn_log_debug("hc response={} health_flags={}", *client_, response_code,
                  HostUtility::healthFlagsToString(*host_));
 
@@ -289,9 +296,8 @@ bool HttpHealthCheckerImpl::HttpActiveHealthCheckSession::isHealthCheckSucceeded
 
   return true;
 }
-void HttpHealthCheckerImpl::HttpActiveHealthCheckSession::onResponseComplete() {
-  timeout_timer_->disableTimer();
 
+void HttpHealthCheckerImpl::HttpActiveHealthCheckSession::onResponseComplete() {
   if (isHealthCheckSucceeded()) {
     handleSuccess();
   } else {
@@ -306,19 +312,15 @@ void HttpHealthCheckerImpl::HttpActiveHealthCheckSession::onResponseComplete() {
   }
 
   response_headers_.reset();
-  interval_timer_->enableTimer(parent_.interval());
 }
 
 void HttpHealthCheckerImpl::HttpActiveHealthCheckSession::onTimeout() {
   conn_log_debug("connection/stream timeout health_flags={}", *client_,
                  HostUtility::healthFlagsToString(*host_));
-  handleFailure(true);
 
   // If there is an active request it will get reset, so make sure we ignore the reset.
   expect_reset_ = true;
   client_->close();
-
-  interval_timer_->enableTimer(parent_.interval());
 }
 
 Http::CodecClient*
@@ -360,28 +362,8 @@ TcpHealthCheckerImpl::TcpHealthCheckerImpl(const Cluster& cluster, const Json::O
       send_bytes_(TcpHealthCheckMatcher::loadJsonBytes(config.getObjectArray("send"))),
       receive_bytes_(TcpHealthCheckMatcher::loadJsonBytes(config.getObjectArray("receive"))) {}
 
-void TcpHealthCheckerImpl::onClusterMemberUpdate(const std::vector<HostSharedPtr>& hosts_added,
-                                                 const std::vector<HostSharedPtr>& hosts_removed) {
-  for (const HostSharedPtr& host : hosts_added) {
-    active_sessions_[host].reset(new TcpActiveHealthCheckSession(*this, host));
-  }
-
-  for (const HostSharedPtr& host : hosts_removed) {
-    auto session_iter = active_sessions_.find(host);
-    ASSERT(active_sessions_.end() != session_iter);
-    active_sessions_.erase(session_iter);
-  }
-}
-
-void TcpHealthCheckerImpl::start() {
-  for (const HostSharedPtr& host : cluster_.hosts()) {
-    active_sessions_[host].reset(new TcpActiveHealthCheckSession(*this, host));
-  }
-}
-
 TcpHealthCheckerImpl::TcpActiveHealthCheckSession::~TcpActiveHealthCheckSession() {
   if (client_) {
-    expect_close_ = true;
     client_->close(Network::ConnectionCloseType::NoFlush);
   }
 }
@@ -391,22 +373,17 @@ void TcpHealthCheckerImpl::TcpActiveHealthCheckSession::onData(Buffer::Instance&
   if (TcpHealthCheckMatcher::match(parent_.receive_bytes_, data)) {
     data.drain(data.length());
     handleSuccess();
-    timeout_timer_->disableTimer();
-    interval_timer_->enableTimer(parent_.interval());
   }
 }
 
 void TcpHealthCheckerImpl::TcpActiveHealthCheckSession::onEvent(uint32_t events) {
-  if (expect_close_) {
-    return;
+  if (events & Network::ConnectionEvent::RemoteClose) {
+    handleFailure(true);
   }
 
   if (events & Network::ConnectionEvent::RemoteClose ||
       events & Network::ConnectionEvent::LocalClose) {
-    handleFailure(true);
     parent_.dispatcher_.deferredDelete(std::move(client_));
-    timeout_timer_->disableTimer();
-    interval_timer_->enableTimer(parent_.interval());
   }
 }
 
@@ -427,11 +404,73 @@ void TcpHealthCheckerImpl::TcpActiveHealthCheckSession::onInterval() {
   }
 
   client_->write(data);
-  timeout_timer_->enableTimer(parent_.timeout_);
 }
 
 void TcpHealthCheckerImpl::TcpActiveHealthCheckSession::onTimeout() {
   client_->close(Network::ConnectionCloseType::NoFlush);
 }
+
+RedisHealthCheckerImpl::RedisHealthCheckerImpl(const Cluster& cluster, const Json::Object& config,
+                                               Event::Dispatcher& dispatcher,
+                                               Runtime::Loader& runtime,
+                                               Runtime::RandomGenerator& random,
+                                               Redis::ConnPool::ClientFactory& client_factory)
+    : HealthCheckerImplBase(cluster, config, dispatcher, runtime, random),
+      client_factory_(client_factory) {}
+
+RedisHealthCheckerImpl::RedisActiveHealthCheckSession::RedisActiveHealthCheckSession(
+    RedisHealthCheckerImpl& parent, HostSharedPtr host)
+    : ActiveHealthCheckSession(parent, host), parent_(parent) {}
+
+RedisHealthCheckerImpl::RedisActiveHealthCheckSession::~RedisActiveHealthCheckSession() {
+  if (current_request_) {
+    current_request_->cancel();
+    current_request_ = nullptr;
+  }
+
+  if (client_) {
+    client_->close();
+  }
+}
+
+void RedisHealthCheckerImpl::RedisActiveHealthCheckSession::onEvent(uint32_t events) {
+  if (events & Network::ConnectionEvent::RemoteClose ||
+      events & Network::ConnectionEvent::LocalClose) {
+    // This should only happen after any active requests have been failed/cancelled.
+    ASSERT(!current_request_);
+    parent_.dispatcher_.deferredDelete(std::move(client_));
+  }
+}
+
+void RedisHealthCheckerImpl::RedisActiveHealthCheckSession::onInterval() {
+  if (!client_) {
+    client_ = parent_.client_factory_.create(host_, parent_.dispatcher_, *this);
+    client_->addConnectionCallbacks(*this);
+  }
+
+  std::vector<Redis::RespValue> values(1);
+  values[0].type(Redis::RespType::BulkString);
+  values[0].asString() = "PING";
+  Redis::RespValue request;
+  request.type(Redis::RespType::Array);
+  request.asArray().swap(values);
+
+  ASSERT(!current_request_);
+  current_request_ = client_->makeRequest(request, *this);
+}
+
+void RedisHealthCheckerImpl::RedisActiveHealthCheckSession::onResponse(
+    Redis::RespValuePtr&& value) {
+  current_request_ = nullptr;
+  if (value->type() == Redis::RespType::BulkString && value->asString() == "PONG") {
+    handleSuccess();
+  } else {
+    handleFailure(false);
+  }
+}
+
+void RedisHealthCheckerImpl::RedisActiveHealthCheckSession::onFailure() { ASSERT(false); }
+
+void RedisHealthCheckerImpl::RedisActiveHealthCheckSession::onTimeout() { ASSERT(false); }
 
 } // Upstream
