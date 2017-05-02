@@ -18,18 +18,27 @@ do
        want_push='true'
    fi
 done
-if [ "$TRAVIS_PULL_REQUEST" == "false" ] && [ "$want_push" == "true" ]
+# if [ "$TRAVIS_PULL_REQUEST" == "false" ] && [ "$want_push" == "true" ]
+if [ "$TRAVIS_PULL_REQUEST" == "true" ]
 then
     docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_PASSWORD
-    docker push lyft/envoy:latest
-    docker tag lyft/envoy:latest lyft/envoy:$TRAVIS_COMMIT
-    docker push lyft/envoy:$TRAVIS_COMMIT
-    docker tag lyft/envoy-alpine:latest lyft/envoy-alpine:$TRAVIS_COMMIT
-    docker push lyft/envoy-alpine:$TRAVIS_COMMIT
-    docker push lyft/envoy-alpine:latest
-    docker tag lyft/envoy-alpine-debug:latest lyft/envoy-alpine-debug:$TRAVIS_COMMIT
-    docker push lyft/envoy-alpine-debug:$TRAVIS_COMMIT
-    docker push lyft/envoy-alpine-debug:latest
+    # docker push lyft/envoy:latest
+    # docker tag lyft/envoy:latest lyft/envoy:$TRAVIS_COMMIT
+    # docker push lyft/envoy:$TRAVIS_COMMIT
+    # docker tag lyft/envoy-alpine:latest lyft/envoy-alpine:$TRAVIS_COMMIT
+    # docker push lyft/envoy-alpine:$TRAVIS_COMMIT
+    # docker push lyft/envoy-alpine:latest
+    # docker tag lyft/envoy-alpine-debug:latest lyft/envoy-alpine-debug:$TRAVIS_COMMIT
+    # docker push lyft/envoy-alpine-debug:$TRAVIS_COMMIT
+    # docker push lyft/envoy-alpine-debug:latest
+
+    if [[ $(git diff HEAD^ ci/build_container/) ]]; then
+        echo "There are changes in the ci/build_container directory"
+        echo "Updating lyft/envoy-build image"
+        ./ci/build_container/update_build_container.sh
+    else
+        echo "The ci/build_container directory has not changed"
+    fi
 else
     echo 'Ignoring PR branch for docker push.'
 fi
