@@ -19,7 +19,7 @@ do
    fi
 done
 # if [ "$TRAVIS_PULL_REQUEST" == "false" ] && [ "$want_push" == "true" ]
-if [ "$TRAVIS_PULL_REQUEST" == "true" ]
+if [ 0 ]
 then
     docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_PASSWORD
     # docker push lyft/envoy:latest
