@@ -4,33 +4,25 @@ set -e
 
 # Setup basic requirements and install them.
 apt-get update
-echo "big install"
 apt-get install -y wget software-properties-common make cmake git python python-pip \
   clang-format-3.6 bc libtool automake zip time
-echo "golang"
 apt-get install -y golang
-apt-get clean
 # For debugging.
 apt-get install -y gdb strace
-apt-get clean
 add-apt-repository -y ppa:ubuntu-toolchain-r/test
 apt-get update
 apt-get install -y g++-4.9
-apt-get clean
 # clang head (currently 5.0)
 wget -O - http://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
 apt-add-repository "deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial main"
 apt-get update
 apt-get install -y clang-5.0
-apt-get clean
 # Bazel and related dependencies.
 apt-get install -y openjdk-8-jdk curl
-apt-get clean
 echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8" | tee /etc/apt/sources.list.d/bazel.list
 curl https://bazel.build/bazel-release.pub.gpg | apt-key add -
 apt-get update
 apt-get install -y bazel
-apt-get clean
 rm -rf /var/lib/apt/lists/*
 
 # virtualenv
