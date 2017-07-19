@@ -25,5 +25,6 @@ envoy_cc_test(
         "//source/server/http:health_check_lib",
         "//test/mocks/server:server_mocks",
         "//test/test_common:utility_lib",
+        "//source/server/config/http:ufesorch_lib",
     ],
 )

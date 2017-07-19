@@ -40,6 +40,7 @@ envoy_cc_library(
         "//source/common/tracing:http_tracer_lib",
         "//source/common/tracing/zipkin:zipkin_lib",
         "//source/common/upstream:cluster_manager_lib",
+        "//source/common/cache:ufesorch_lib",
     ],
 )
 

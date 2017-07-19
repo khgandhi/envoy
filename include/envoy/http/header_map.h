@@ -174,7 +174,6 @@ public:
    * @return the header value.
    */
   virtual const HeaderString& value() const PURE;
-
   /**
    * @return the header value.
    */

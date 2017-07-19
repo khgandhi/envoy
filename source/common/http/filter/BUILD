@@ -92,3 +92,57 @@ envoy_cc_library(
         "//source/common/json:json_validator_lib",
     ],
 )
+
+envoy_cc_library(
+    name = "cachefilter_includes",
+    hdrs = ["cache_filter.h"],
+    deps = [
+        "//include/envoy/http:filter_interface",
+        "//include/envoy/upstream:cluster_manager_interface",
+        "//source/common/common:assert_lib",
+        "//source/common/http:header_map_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "cachefilter_lib",
+    srcs = ["cache_filter.cc"],
+    deps = [
+        ":cachefilter_includes",
+        "//include/envoy/http:filter_interface",
+        "//include/envoy/upstream:cluster_manager_interface",
+        "//source/common/common:assert_lib",
+        "//source/common/http:header_map_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "ufesorch_includes",
+    hdrs = ["ufesorch_filter.h"],
+    deps = [
+        "//include/envoy/http:filter_interface",
+        "//include/envoy/upstream:cluster_manager_interface",
+        "//source/common/common:assert_lib",
+        "//source/common/http:header_map_lib",
+        "//source/common/common:logger_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "ufesorch_lib",
+    srcs = ["ufesorch_filter.cc"],
+    deps = [
+        ":ufesorch_includes",
+        "//include/envoy/http:filter_interface",
+        "//include/envoy/upstream:cluster_manager_interface",
+        "//include/envoy/buffer:buffer_interface",
+        "//include/envoy/cache:cache_interface",
+        "//include/envoy/http:codes_interface",
+        "//source/common/common:assert_lib",
+        "//source/common/http:header_map_lib",
+        "//source/common/buffer:buffer_lib",
+        "//source/common/common:logger_lib",
+        "//source/common/cache:cache_constants",
+        "//source/common/common:enum_to_int",
+    ],
+)

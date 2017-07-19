@@ -122,3 +122,16 @@ envoy_cc_library(
         "//source/server:configuration_lib",
     ],
 )
+
+envoy_cc_library(
+    name = "ufesorch_lib",
+    srcs = ["ufesorch_cache.cc"],
+    hdrs = ["ufesorch_cache.h"],
+    deps = [
+        "//include/envoy/registry",
+        "//include/envoy/server:filter_config_interface",
+        "//source/common/http/filter:ufesorch_includes",
+        "//source/common/http/filter:ufesorch_lib",
+        "//source/common/cache:ufesorch_lib",
+    ],
+)

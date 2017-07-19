@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <iostream>
 
 #include "envoy/common/exception.h"
 
@@ -28,7 +29,9 @@ namespace Registry {
 template <class Base> class FactoryRegistry {
 public:
   static void registerFactory(Base& factory) {
+	std::cout << "registering factory: " << factory.name() << "\n";
     auto result = factories().emplace(std::make_pair(factory.name(), &factory));
+
     if (!result.second) {
       throw EnvoyException(fmt::format("Double registration for name: '{}'", factory.name()));
     }
@@ -39,6 +42,10 @@ public:
    */
   static Base* getFactory(const std::string& name) {
     auto it = factories().find(name);
+    std::cout << "factory map size: " << factories().size() << "\n";
+    for (std::pair<std::string, Base*> element: factories()) {
+    	std::cout << "factory found: "<< element.first << "\n";
+    }
     if (it == factories().end()) {
       return nullptr;
     }

@@ -48,6 +48,12 @@ public:
 
   // Redis Schemas
   static const std::string REDIS_CONN_POOL_SCHEMA;
+
+  // cache schema
+  static const std::string CACHE_FILTER_SCHEMA;
+
+  //orch schema
+  static const std::string ORCH_FILTER_SCHEMA;
 };
 
 } // Json

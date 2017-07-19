@@ -11,6 +11,7 @@
 #include "server/config/http/lightstep_http_tracer.h"
 #include "server/config/http/ratelimit.h"
 #include "server/config/http/router.h"
+#include "server/config/http/ufesorch_cache.h"
 #include "server/config/http/zipkin_http_tracer.h"
 #include "server/config/network/http_connection_manager.h"
 #include "server/http/health_check.h"
@@ -178,6 +179,24 @@ TEST(HttpFilterConfigTest, RouterFilter) {
   Http::MockFilterChainFactoryCallbacks filter_callback;
   EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
   cb(filter_callback);
+}
+
+TEST(HttpFilterConfigTest, UfesOrchFilter) {
+	std::string json_string = R"EOF(
+	  {
+        "orchestrator_cluster": "local-orch",
+        "timeout": 10000
+      }
+	  )EOF";
+
+	  Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json_string);
+	  NiceMock<MockFactoryContext> context;
+	  UfesOrchFilterConfig factory;
+	  EXPECT_EQ(HttpFilterType::Decoder, factory.type());
+	  HttpFilterFactoryCb cb = factory.createFilterFactory(*json_config, "stats", context);
+	  Http::MockFilterChainFactoryCallbacks filter_callback;
+	  EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
+	  cb(filter_callback);
 }
 
 TEST(HttpFilterConfigTest, BadRouterFilterConfig) {

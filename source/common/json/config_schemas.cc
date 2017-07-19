@@ -1421,4 +1421,30 @@ const std::string Json::Schema::SDS_SCHEMA(R"EOF(
     "required" : ["hosts"]
   }
   )EOF");
+const std::string Json::Schema::CACHE_FILTER_SCHEMA(R"EOF(
+  {
+    "$schema": "http://json-schema.org/schema#",
+    "type" : "object",
+    "properties" : {
+      "cache_cluster" : {"type" : "string"},
+      "orchestrator_cluster" : {"type": "string"},
+      "timeout_ms": {"type" : "integer"}
+    },
+    "required" : ["cluster", "timeout_ms"],
+    "additionalProperties" : false
+  }
+  )EOF");
+
+const std::string Json::Schema::ORCH_FILTER_SCHEMA(R"EOF(
+  {
+    "$schema": "http://json-schema.org/schema#",
+    "type" : "object",
+    "properties" : {
+      "orchestrator_cluster" : {"type": "string"},
+      "timeout_ms": {"type" : "integer"}
+    },
+    "required" : ["cluster", "timeout_ms"],
+    "additionalProperties" : false
+  }
+  )EOF");
 } // Envoy

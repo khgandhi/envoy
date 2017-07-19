@@ -75,3 +75,20 @@ envoy_cc_test(
         "//test/test_common:utility_lib",
     ],
 )
+
+envoy_cc_test(
+    name = "ufesorch_filter_test",
+    srcs = ["ufesorch_filter_test.cc"],
+    deps = [
+        "//source/common/http:header_map_lib",
+        "//source/common/http:headers_lib",
+        "//source/common/http/filter:ufesorchfilter_includes",
+        "//source/common/http/filter:ufesorchfilter_lib",
+        "//source/common/cache:cache_constants",
+         "//include/envoy/cache:cache_interface",
+        "//test/mocks/http:http_mocks",
+        "//test/mocks/upstream:upstream_mocks",
+        "//test/test_common:utility_lib",
+        "//source/common/buffer:buffer_lib",
+    ],
+)

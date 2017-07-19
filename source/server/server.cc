@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <iostream>
 
 #include "envoy/event/dispatcher.h"
 #include "envoy/event/signal.h"
@@ -128,6 +129,7 @@ bool InstanceImpl::healthCheckFailed() { return server_stats_.live_.value() == 0
 
 void InstanceImpl::initialize(Options& options, TestHooks& hooks,
                               ComponentFactory& component_factory) {
+  std::cout << "starting----------------------";
   ENVOY_LOG(warn, "initializing epoch {} (hot restart version={})", options.restartEpoch(),
             restarter_.version());
 
