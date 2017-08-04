@@ -492,7 +492,6 @@ private:
     Stats::TimespanPtr request_timer_;
     State state_;
     AccessLog::RequestInfoImpl request_info_;
-    std::string downstream_address_;
     Optional<Router::RouteConstSharedPtr> cached_route_;
   };
 
