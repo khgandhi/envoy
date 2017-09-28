@@ -5,6 +5,7 @@
 #include <string>
 
 #include "common/common/empty_string.h"
+#include "common/common/utility.h"
 #include "common/http/access_log/access_log_formatter.h"
 #include "common/http/headers.h"
 #include "common/http/utility.h"
@@ -12,6 +13,7 @@
 #include "common/runtime/uuid_util.h"
 #include "common/tracing/http_tracer_impl.h"
 
+namespace Envoy {
 namespace Http {
 
 std::atomic<uint64_t> ConnectionManagerUtility::next_stream_id_(0);
@@ -26,19 +28,23 @@ uint64_t ConnectionManagerUtility::generateStreamId(const Router::Config& route_
   }
 }
 
-void ConnectionManagerUtility::mutateRequestHeaders(Http::HeaderMap& request_headers,
-                                                    Network::Connection& connection,
-                                                    ConnectionManagerConfig& config,
-                                                    const Router::Config& route_config,
-                                                    Runtime::RandomGenerator& random,
-                                                    Runtime::Loader& runtime) {
+void ConnectionManagerUtility::mutateRequestHeaders(
+    Http::HeaderMap& request_headers, Protocol protocol, Network::Connection& connection,
+    ConnectionManagerConfig& config, const Router::Config& route_config,
+    Runtime::RandomGenerator& random, Runtime::Loader& runtime,
+    const LocalInfo::LocalInfo& local_info) {
   // Clean proxy headers.
-  request_headers.removeConnection();
   request_headers.removeEnvoyInternalRequest();
   request_headers.removeKeepAlive();
   request_headers.removeProxyConnection();
   request_headers.removeTransferEncoding();
-  request_headers.removeUpgrade();
+
+  // If this is a WebSocket Upgrade request, do not remove the Connection and Upgrade headers,
+  // as we forward them verbatim to the upstream hosts.
+  if (protocol != Protocol::Http11 || !Utility::isWebSocketUpgradeRequest(request_headers)) {
+    request_headers.removeConnection();
+    request_headers.removeUpgrade();
+  }
 
   // If we are "using remote address" this means that we create/append to XFF with our immediate
   // peer. Cases where we don't "use remote address" include trusted double proxy where we expect
@@ -49,14 +55,14 @@ void ConnectionManagerUtility::mutateRequestHeaders(Http::HeaderMap& request_hea
     } else {
       Utility::appendXff(request_headers, connection.remoteAddress());
     }
-    request_headers.insertForwardedProto().value(
+    request_headers.insertForwardedProto().value().setReference(
         connection.ssl() ? Headers::get().SchemeValues.Https : Headers::get().SchemeValues.Http);
   }
 
   // If we didn't already replace x-forwarded-proto because we are using the remote address, and
   // remote hasn't set it (trusted proxy), we set it, since we then use this for setting scheme.
   if (!request_headers.ForwardedProto()) {
-    request_headers.insertForwardedProto().value(
+    request_headers.insertForwardedProto().value().setReference(
         connection.ssl() ? Headers::get().SchemeValues.Https : Headers::get().SchemeValues.Http);
   }
 
@@ -70,14 +76,17 @@ void ConnectionManagerUtility::mutateRequestHeaders(Http::HeaderMap& request_hea
 
   // If internal request, set header and do other internal only modifications.
   if (internal_request) {
-    request_headers.insertEnvoyInternalRequest().value(
+    request_headers.insertEnvoyInternalRequest().value().setReference(
         Headers::get().EnvoyInternalRequestValues.True);
   } else {
     if (edge_request) {
       request_headers.removeEnvoyDownstreamServiceCluster();
+      request_headers.removeEnvoyDownstreamServiceNode();
     }
 
     request_headers.removeEnvoyRetryOn();
+    request_headers.removeEnvoyRetryGrpcOn();
+    request_headers.removeEnvoyMaxRetries();
     request_headers.removeEnvoyUpstreamAltStatName();
     request_headers.removeEnvoyUpstreamRequestTimeoutMs();
     request_headers.removeEnvoyUpstreamRequestPerTryTimeoutMs();
@@ -94,7 +103,13 @@ void ConnectionManagerUtility::mutateRequestHeaders(Http::HeaderMap& request_hea
     request_headers.insertEnvoyDownstreamServiceCluster().value(config.userAgent().value());
     HeaderEntry& user_agent_header = request_headers.insertUserAgent();
     if (user_agent_header.value().empty()) {
-      user_agent_header.value(config.userAgent().value());
+      // Following setReference() is safe because user agent is constant for the life of the
+      // listener.
+      user_agent_header.value().setReference(config.userAgent().value());
+    }
+
+    if (!local_info.nodeName().empty()) {
+      request_headers.insertEnvoyDownstreamServiceNode().value(local_info.nodeName());
     }
   }
 
@@ -107,22 +122,79 @@ void ConnectionManagerUtility::mutateRequestHeaders(Http::HeaderMap& request_hea
 
   // Generate x-request-id for all edge requests, or if there is none.
   if (config.generateRequestId() && (edge_request || !request_headers.RequestId())) {
-    std::string uuid = "";
-
-    try {
-      uuid = random.uuid();
-    } catch (const EnvoyException&) {
-      // We could not generate uuid, not a big deal.
-      config.stats().named_.failed_generate_uuid_.inc();
-    }
-
-    if (!uuid.empty()) {
-      request_headers.insertRequestId().value(uuid);
-    }
+    // TODO(PiotrSikora) PERF: Write UUID directly to the header map.
+    const std::string uuid = random.uuid();
+    ASSERT(!uuid.empty());
+    request_headers.insertRequestId().value(uuid);
   }
 
   if (config.tracingConfig()) {
     Tracing::HttpTracerUtility::mutateHeaders(request_headers, runtime);
+  }
+  mutateXfccRequestHeader(request_headers, connection, config);
+}
+
+void ConnectionManagerUtility::mutateXfccRequestHeader(Http::HeaderMap& request_headers,
+                                                       Network::Connection& connection,
+                                                       ConnectionManagerConfig& config) {
+  // When AlwaysForwardOnly is set, always forward the XFCC header without modification.
+  if (config.forwardClientCert() == Http::ForwardClientCertType::AlwaysForwardOnly) {
+    return;
+  }
+  // When Sanitize is set, or the connection is not mutual TLS, remove the XFCC header.
+  if (config.forwardClientCert() == Http::ForwardClientCertType::Sanitize ||
+      !(connection.ssl() && connection.ssl()->peerCertificatePresented())) {
+    request_headers.removeForwardedClientCert();
+    return;
+  }
+
+  // When ForwardOnly is set, always forward the XFCC header without modification.
+  if (config.forwardClientCert() == Http::ForwardClientCertType::ForwardOnly) {
+    return;
+  }
+
+  // TODO(myidpt): Handle the special characters in By and SAN fields.
+  // TODO: Optimize client_cert_details based on perf analysis (direct string appending may be more
+  // preferable).
+  std::vector<std::string> client_cert_details;
+  // When AppendForward or SanitizeSet is set, the client certificate information should be set into
+  // the XFCC header.
+  if (config.forwardClientCert() == Http::ForwardClientCertType::AppendForward ||
+      config.forwardClientCert() == Http::ForwardClientCertType::SanitizeSet) {
+    if (!connection.ssl()->uriSanLocalCertificate().empty()) {
+      client_cert_details.push_back("By=" + connection.ssl()->uriSanLocalCertificate());
+    }
+    if (!connection.ssl()->sha256PeerCertificateDigest().empty()) {
+      client_cert_details.push_back("Hash=" + connection.ssl()->sha256PeerCertificateDigest());
+    }
+    for (const auto& detail : config.setCurrentClientCertDetails()) {
+      switch (detail) {
+      case Http::ClientCertDetailsType::Subject:
+        // The "Subject" key still exists even if the subject is empty.
+        client_cert_details.push_back("Subject=\"" + connection.ssl()->subjectPeerCertificate() +
+                                      "\"");
+        break;
+      case Http::ClientCertDetailsType::SAN:
+        // Currently, we only support a single SAN field with URI type.
+        // The "SAN" key still exists even if the SAN is empty.
+        client_cert_details.push_back("SAN=" + connection.ssl()->uriSanPeerCertificate());
+      }
+    }
+  }
+
+  std::string client_cert_details_str = StringUtil::join(client_cert_details, ";");
+  if (config.forwardClientCert() == Http::ForwardClientCertType::AppendForward) {
+    if (request_headers.ForwardedClientCert() &&
+        !request_headers.ForwardedClientCert()->value().empty()) {
+      request_headers.ForwardedClientCert()->value().append(("," + client_cert_details_str).c_str(),
+                                                            client_cert_details_str.length() + 1);
+    } else {
+      request_headers.insertForwardedClientCert().value(client_cert_details_str);
+    }
+  } else if (config.forwardClientCert() == Http::ForwardClientCertType::SanitizeSet) {
+    request_headers.insertForwardedClientCert().value(client_cert_details_str);
+  } else {
+    NOT_REACHED;
   }
 }
 
@@ -138,7 +210,7 @@ void ConnectionManagerUtility::mutateResponseHeaders(Http::HeaderMap& response_h
 
   for (const std::pair<Http::LowerCaseString, std::string>& to_add :
        route_config.responseHeadersToAdd()) {
-    response_headers.addStatic(to_add.first, to_add.second);
+    response_headers.addReference(to_add.first, to_add.second);
   }
 
   if (request_headers.EnvoyForceTrace() && request_headers.RequestId()) {
@@ -146,4 +218,5 @@ void ConnectionManagerUtility::mutateResponseHeaders(Http::HeaderMap& response_h
   }
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

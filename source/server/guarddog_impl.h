@@ -5,6 +5,7 @@
 #include <mutex>
 #include <vector>
 
+#include "envoy/common/optional.h"
 #include "envoy/server/configuration.h"
 #include "envoy/server/guarddog.h"
 #include "envoy/server/watchdog.h"
@@ -14,7 +15,9 @@
 #include "common/common/thread.h"
 #include "common/event/libevent.h"
 
+namespace Envoy {
 namespace Server {
+
 /**
  * This feature performs deadlock detection stats collection & enforcement.
  *
@@ -64,6 +67,13 @@ private:
   bool killEnabled() const { return kill_timeout_ > std::chrono::milliseconds(0); }
   bool multikillEnabled() const { return multi_kill_timeout_ > std::chrono::milliseconds(0); }
 
+  struct WatchedDog {
+    WatchDogSharedPtr dog_;
+    Optional<MonotonicTime> last_alert_time_;
+    bool miss_alerted_{};
+    bool megamiss_alerted_{};
+  };
+
   MonotonicTimeSource& time_source_;
   const std::chrono::milliseconds miss_timeout_;
   const std::chrono::milliseconds megamiss_timeout_;
@@ -72,7 +82,7 @@ private:
   const std::chrono::milliseconds loop_interval_;
   Stats::Counter& watchdog_miss_counter_;
   Stats::Counter& watchdog_megamiss_counter_;
-  std::vector<WatchDogSharedPtr> watched_dogs_;
+  std::vector<WatchedDog> watched_dogs_;
   std::mutex wd_lock_;
   Thread::ThreadPtr thread_;
   std::mutex exit_lock_;
@@ -81,4 +91,5 @@ private:
   std::condition_variable_any force_checked_event_;
 };
 
-} // Server
+} // namespace Server
+} // namespace Envoy

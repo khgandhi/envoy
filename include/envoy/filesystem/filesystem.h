@@ -7,6 +7,7 @@
 
 #include "envoy/common/pure.h"
 
+namespace Envoy {
 namespace Filesystem {
 
 class OsSysCalls {
@@ -50,6 +51,11 @@ public:
    * Reopen the file.
    */
   virtual void reopen() PURE;
+
+  /**
+   * Synchronously flush all pending data to disk.
+   */
+  virtual void flush() PURE;
 };
 
 typedef std::shared_ptr<File> FileSharedPtr;
@@ -78,4 +84,5 @@ public:
 
 typedef std::unique_ptr<Watcher> WatcherPtr;
 
-} // Filesystem
+} // namespace Filesystem
+} // namespace Envoy

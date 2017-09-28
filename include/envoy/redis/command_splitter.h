@@ -5,6 +5,7 @@
 #include "envoy/common/pure.h"
 #include "envoy/redis/codec.h"
 
+namespace Envoy {
 namespace Redis {
 namespace CommandSplitter {
 
@@ -56,5 +57,6 @@ public:
   virtual SplitRequestPtr makeRequest(const RespValue& request, SplitCallbacks& callbacks) PURE;
 };
 
-} // CommandSplitter
-} // Redis
+} // namespace CommandSplitter
+} // namespace Redis
+} // namespace Envoy

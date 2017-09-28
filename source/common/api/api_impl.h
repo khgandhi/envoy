@@ -6,6 +6,7 @@
 #include "envoy/api/api.h"
 #include "envoy/filesystem/filesystem.h"
 
+namespace Envoy {
 namespace Api {
 
 /**
@@ -28,4 +29,5 @@ private:
   std::chrono::milliseconds file_flush_interval_msec_;
 };
 
-} // Api
+} // namespace Api
+} // namespace Envoy

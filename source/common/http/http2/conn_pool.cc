@@ -10,6 +10,7 @@
 #include "common/network/utility.h"
 #include "common/upstream/upstream_impl.h"
 
+namespace Envoy {
 namespace Http {
 namespace Http2 {
 
@@ -56,8 +57,8 @@ void ConnPoolImpl::checkForDrained() {
   }
 
   if (drained) {
-    log_debug("invoking drained callbacks");
-    for (DrainedCb cb : drained_callbacks_) {
+    ENVOY_LOG(debug, "invoking drained callbacks");
+    for (const DrainedCb& cb : drained_callbacks_) {
       cb();
     }
   }
@@ -81,13 +82,12 @@ ConnectionPool::Cancellable* ConnPoolImpl::newStream(Http::StreamDecoder& respon
     primary_client_.reset(new ActiveClient(*this));
   }
 
-  if (primary_client_->client_->numActiveRequests() >= maxConcurrentStreams() ||
-      !host_->cluster().resourceManager(priority_).requests().canCreate()) {
-    log_debug("max requests overflow");
+  if (!host_->cluster().resourceManager(priority_).requests().canCreate()) {
+    ENVOY_LOG(debug, "max requests overflow");
     callbacks.onPoolFailure(ConnectionPool::PoolFailureReason::Overflow, nullptr);
     host_->cluster().stats().upstream_rq_pending_overflow_.inc();
   } else {
-    conn_log_debug("creating stream", *primary_client_->client_);
+    ENVOY_CONN_LOG(debug, "creating stream", *primary_client_->client_);
     primary_client_->total_streams_++;
     host_->stats().rq_total_.inc();
     host_->stats().rq_active_.inc();
@@ -101,13 +101,13 @@ ConnectionPool::Cancellable* ConnPoolImpl::newStream(Http::StreamDecoder& respon
   return nullptr;
 }
 
-void ConnPoolImpl::onConnectionEvent(ActiveClient& client, uint32_t events) {
-  if ((events & Network::ConnectionEvent::RemoteClose) ||
-      (events & Network::ConnectionEvent::LocalClose)) {
+void ConnPoolImpl::onConnectionEvent(ActiveClient& client, Network::ConnectionEvent event) {
+  if (event == Network::ConnectionEvent::RemoteClose ||
+      event == Network::ConnectionEvent::LocalClose) {
 
     if (client.closed_with_active_rq_) {
       host_->cluster().stats().upstream_cx_destroy_with_active_rq_.inc();
-      if (events & Network::ConnectionEvent::RemoteClose) {
+      if (event == Network::ConnectionEvent::RemoteClose) {
         host_->cluster().stats().upstream_cx_destroy_remote_with_active_rq_.inc();
       } else {
         host_->cluster().stats().upstream_cx_destroy_local_with_active_rq_.inc();
@@ -115,10 +115,10 @@ void ConnPoolImpl::onConnectionEvent(ActiveClient& client, uint32_t events) {
     }
 
     if (&client == primary_client_.get()) {
-      conn_log_debug("destroying primary client", *client.client_);
+      ENVOY_CONN_LOG(debug, "destroying primary client", *client.client_);
       dispatcher_.deferredDelete(std::move(primary_client_));
     } else {
-      conn_log_debug("destroying draining client", *client.client_);
+      ENVOY_CONN_LOG(debug, "destroying draining client", *client.client_);
       dispatcher_.deferredDelete(std::move(draining_client_));
     }
 
@@ -132,7 +132,7 @@ void ConnPoolImpl::onConnectionEvent(ActiveClient& client, uint32_t events) {
     }
   }
 
-  if (events & Network::ConnectionEvent::Connected) {
+  if (event == Network::ConnectionEvent::Connected) {
     conn_connect_ms_->complete();
   }
 
@@ -143,7 +143,7 @@ void ConnPoolImpl::onConnectionEvent(ActiveClient& client, uint32_t events) {
 }
 
 void ConnPoolImpl::movePrimaryClientToDraining() {
-  conn_log_debug("moving primary to draining", *primary_client_->client_);
+  ENVOY_CONN_LOG(debug, "moving primary to draining", *primary_client_->client_);
   if (draining_client_) {
     // This should pretty much never happen, but is possible if we start draining and then get
     // a goaway for example. In this case just kill the current draining connection. It's not
@@ -164,20 +164,21 @@ void ConnPoolImpl::movePrimaryClientToDraining() {
 }
 
 void ConnPoolImpl::onConnectTimeout(ActiveClient& client) {
-  conn_log_debug("connect timeout", *client.client_);
+  ENVOY_CONN_LOG(debug, "connect timeout", *client.client_);
   host_->cluster().stats().upstream_cx_connect_timeout_.inc();
   client.client_->close();
 }
 
 void ConnPoolImpl::onGoAway(ActiveClient& client) {
-  conn_log_debug("remote goaway", *client.client_);
+  ENVOY_CONN_LOG(debug, "remote goaway", *client.client_);
+  host_->cluster().stats().upstream_cx_close_notify_.inc();
   if (&client == primary_client_.get()) {
     movePrimaryClientToDraining();
   }
 }
 
 void ConnPoolImpl::onStreamDestroy(ActiveClient& client) {
-  conn_log_debug("destroying stream: {} remaining", *client.client_,
+  ENVOY_CONN_LOG(debug, "destroying stream: {} remaining", *client.client_,
                  client.client_->numActiveRequests());
   host_->stats().rq_active_.dec();
   host_->cluster().stats().upstream_rq_active_.dec();
@@ -228,10 +229,11 @@ ConnPoolImpl::ActiveClient::ActiveClient(ConnPoolImpl& parent)
   parent_.host_->cluster().stats().upstream_cx_http2_total_.inc();
   conn_length_ = parent_.host_->cluster().stats().upstream_cx_length_ms_.allocateSpan();
 
-  client_->setBufferStats({parent_.host_->cluster().stats().upstream_cx_rx_bytes_total_,
-                           parent_.host_->cluster().stats().upstream_cx_rx_bytes_buffered_,
-                           parent_.host_->cluster().stats().upstream_cx_tx_bytes_total_,
-                           parent_.host_->cluster().stats().upstream_cx_tx_bytes_buffered_});
+  client_->setConnectionStats({parent_.host_->cluster().stats().upstream_cx_rx_bytes_total_,
+                               parent_.host_->cluster().stats().upstream_cx_rx_bytes_buffered_,
+                               parent_.host_->cluster().stats().upstream_cx_tx_bytes_total_,
+                               parent_.host_->cluster().stats().upstream_cx_tx_bytes_buffered_,
+                               &parent_.host_->cluster().stats().bind_errors_});
 }
 
 ConnPoolImpl::ActiveClient::~ActiveClient() {
@@ -246,9 +248,8 @@ CodecClientPtr ProdConnPoolImpl::createCodecClient(Upstream::Host::CreateConnect
   return codec;
 }
 
-uint64_t ProdConnPoolImpl::maxConcurrentStreams() { return ConnectionImpl::MAX_CONCURRENT_STREAMS; }
-
 uint32_t ProdConnPoolImpl::maxTotalStreams() { return MAX_STREAMS; }
 
-} // Http2
-} // Http
+} // namespace Http2
+} // namespace Http
+} // namespace Envoy

@@ -7,6 +7,7 @@
 #include "common/event/dispatcher_impl.h"
 #include "common/event/event_impl_base.h"
 
+namespace Envoy {
 namespace Event {
 
 /**
@@ -31,4 +32,5 @@ private:
   FileTriggerType trigger_;
 };
 
-} // Event
+} // namespace Event
+} // namespace Envoy

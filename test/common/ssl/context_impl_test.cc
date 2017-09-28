@@ -12,6 +12,7 @@
 
 #include "gtest/gtest.h"
 
+namespace Envoy {
 namespace Ssl {
 
 class SslContextImplTest : public SslCertsTest {};
@@ -48,8 +49,8 @@ TEST_F(SslContextImplTest, TestVerifySubjectAltNameURIMatched) {
   EXPECT_NE(fp, nullptr);
   X509* cert = PEM_read_X509(fp, nullptr, nullptr, nullptr);
   EXPECT_NE(cert, nullptr);
-  std::vector<std::string> verify_subject_alt_name_list = {"istio:account1.foo.cluster.local",
-                                                           "istio:account2.bar.cluster.local"};
+  std::vector<std::string> verify_subject_alt_name_list = {"spiffe://lyft.com/fake-team",
+                                                           "spiffe://lyft.com/test-team"};
   EXPECT_TRUE(ContextImpl::verifySubjectAltName(cert, verify_subject_alt_name_list));
   X509_free(cert);
   fclose(fp);
@@ -74,8 +75,8 @@ TEST_F(SslContextImplTest, TestCipherSuites) {
   }
   )EOF";
 
-  Json::ObjectPtr loader = TestEnvironment::jsonLoadFromString(json);
-  ContextConfigImpl cfg(*loader);
+  Json::ObjectSharedPtr loader = TestEnvironment::jsonLoadFromString(json);
+  ClientContextConfigImpl cfg(*loader);
   Runtime::MockLoader runtime;
   ContextManagerImpl manager(runtime);
   Stats::IsolatedStoreImpl store;
@@ -90,8 +91,8 @@ TEST_F(SslContextImplTest, TestExpiringCert) {
   }
   )EOF";
 
-  Json::ObjectPtr loader = TestEnvironment::jsonLoadFromString(json);
-  ContextConfigImpl cfg(*loader);
+  Json::ObjectSharedPtr loader = TestEnvironment::jsonLoadFromString(json);
+  ClientContextConfigImpl cfg(*loader);
   Runtime::MockLoader runtime;
   ContextManagerImpl manager(runtime);
   Stats::IsolatedStoreImpl store;
@@ -113,8 +114,8 @@ TEST_F(SslContextImplTest, TestExpiredCert) {
   }
   )EOF";
 
-  Json::ObjectPtr loader = TestEnvironment::jsonLoadFromString(json);
-  ContextConfigImpl cfg(*loader);
+  Json::ObjectSharedPtr loader = TestEnvironment::jsonLoadFromString(json);
+  ClientContextConfigImpl cfg(*loader);
   Runtime::MockLoader runtime;
   ContextManagerImpl manager(runtime);
   Stats::IsolatedStoreImpl store;
@@ -131,8 +132,8 @@ TEST_F(SslContextImplTest, TestGetCertInformation) {
   }
   )EOF";
 
-  Json::ObjectPtr loader = TestEnvironment::jsonLoadFromString(json);
-  ContextConfigImpl cfg(*loader);
+  Json::ObjectSharedPtr loader = TestEnvironment::jsonLoadFromString(json);
+  ClientContextConfigImpl cfg(*loader);
   Runtime::MockLoader runtime;
   ContextManagerImpl manager(runtime);
   Stats::IsolatedStoreImpl store;
@@ -146,7 +147,7 @@ TEST_F(SslContextImplTest, TestGetCertInformation) {
   // every build. For cert_chain output, we check only for the certificate path.
   std::string ca_cert_partial_output(TestEnvironment::substitute(
       "Certificate Path: {{ test_rundir }}/test/common/ssl/test_data/ca_cert.pem, Serial Number: "
-      "b776a798802a1dcd, "
+      "eaf3b0ea1d0e579a, "
       "Days until Expiration: "));
   std::string cert_chain_partial_output(
       TestEnvironment::substitute("Certificate Path: {{ test_tmpdir }}/unittestcert.pem"));
@@ -157,8 +158,8 @@ TEST_F(SslContextImplTest, TestGetCertInformation) {
 }
 
 TEST_F(SslContextImplTest, TestNoCert) {
-  Json::ObjectPtr loader = TestEnvironment::jsonLoadFromString("{}");
-  ContextConfigImpl cfg(*loader);
+  Json::ObjectSharedPtr loader = TestEnvironment::jsonLoadFromString("{}");
+  ClientContextConfigImpl cfg(*loader);
   Runtime::MockLoader runtime;
   ContextManagerImpl manager(runtime);
   Stats::IsolatedStoreImpl store;
@@ -167,4 +168,5 @@ TEST_F(SslContextImplTest, TestNoCert) {
   EXPECT_EQ("", context->getCertChainInformation());
 }
 
-} // Ssl
+} // namespace Ssl
+} // namespace Envoy

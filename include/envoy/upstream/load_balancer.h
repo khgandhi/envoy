@@ -6,6 +6,7 @@
 #include "envoy/common/pure.h"
 #include "envoy/upstream/upstream.h"
 
+namespace Envoy {
 namespace Upstream {
 
 /**
@@ -17,9 +18,15 @@ public:
   virtual ~LoadBalancerContext() {}
 
   /**
-   * @return const Optional<uint64_t>& the optional hash key to use during load balancing.
+   * @return Optional<uint64_t> the optional hash key to use during load balancing.
    */
-  virtual const Optional<uint64_t>& hashKey() const PURE;
+  virtual Optional<uint64_t> hashKey() const PURE;
+
+  /**
+   * @return const Network::Connection* the incoming connection or nullptr to use during load
+   * balancing.
+   */
+  virtual const Network::Connection* downstreamConnection() const PURE;
 };
 
 /**
@@ -40,4 +47,5 @@ public:
 
 typedef std::unique_ptr<LoadBalancer> LoadBalancerPtr;
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

@@ -19,7 +19,6 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::InSequence;
 using testing::Invoke;
 using testing::NiceMock;
@@ -27,7 +26,9 @@ using testing::Return;
 using testing::ReturnRef;
 using testing::SetArgReferee;
 using testing::WithArgs;
+using testing::_;
 
+namespace Envoy {
 namespace Http {
 namespace RateLimit {
 
@@ -43,11 +44,11 @@ public:
   }
 
   void SetUpTest(const std::string json) {
-    Json::ObjectPtr config = Json::Factory::loadFromString(json);
+    Json::ObjectSharedPtr config = Json::Factory::loadFromString(json);
     config_.reset(new FilterConfig(*config, local_info_, stats_store_, runtime_, cm_));
 
-    client_ = new ::RateLimit::MockClient();
-    filter_.reset(new Filter(config_, ::RateLimit::ClientPtr{client_}));
+    client_ = new Envoy::RateLimit::MockClient();
+    filter_.reset(new Filter(config_, Envoy::RateLimit::ClientPtr{client_}));
     filter_->setDecoderFilterCallbacks(filter_callbacks_);
     filter_callbacks_.route_->route_entry_.rate_limit_policy_.rate_limit_policy_entry_.clear();
     filter_callbacks_.route_->route_entry_.rate_limit_policy_.rate_limit_policy_entry_.emplace_back(
@@ -65,10 +66,10 @@ public:
   )EOF";
 
   FilterConfigSharedPtr config_;
-  ::RateLimit::MockClient* client_;
+  Envoy::RateLimit::MockClient* client_;
   std::unique_ptr<Filter> filter_;
   NiceMock<MockStreamDecoderFilterCallbacks> filter_callbacks_;
-  ::RateLimit::RequestCallbacks* request_callbacks_{};
+  Envoy::RateLimit::RequestCallbacks* request_callbacks_{};
   TestHeaderMapImpl request_headers_;
   Buffer::OwnedImpl data_;
   Stats::IsolatedStoreImpl stats_store_;
@@ -76,7 +77,7 @@ public:
   NiceMock<Upstream::MockClusterManager> cm_;
   NiceMock<Router::MockRateLimitPolicyEntry> route_rate_limit_;
   NiceMock<Router::MockRateLimitPolicyEntry> vh_rate_limit_;
-  std::vector<::RateLimit::Descriptor> descriptor_{{{{"descriptor_key", "descriptor_value"}}}};
+  std::vector<Envoy::RateLimit::Descriptor> descriptor_{{{{"descriptor_key", "descriptor_value"}}}};
   NiceMock<LocalInfo::MockLocalInfo> local_info_;
 };
 
@@ -88,7 +89,7 @@ TEST_F(HttpRateLimitFilterTest, BadConfig) {
   }
   )EOF";
 
-  Json::ObjectPtr config = Json::Factory::loadFromString(filter_config);
+  Json::ObjectSharedPtr config = Json::Factory::loadFromString(filter_config);
   EXPECT_THROW(FilterConfig(*config, local_info_, stats_store_, runtime_, cm_), Json::Exception);
 }
 
@@ -154,25 +155,29 @@ TEST_F(HttpRateLimitFilterTest, OkResponse) {
       .WillOnce(SetArgReferee<1>(descriptor_));
 
   EXPECT_CALL(filter_callbacks_.route_->route_entry_.virtual_host_.rate_limit_policy_,
-              getApplicableRateLimit(0)).Times(1);
+              getApplicableRateLimit(0))
+      .Times(1);
 
   Tracing::TransportContext context{"requestid", "context"};
-  EXPECT_CALL(*client_, limit(_, "foo", testing::ContainerEq(std::vector<::RateLimit::Descriptor>{
-                                            {{{"descriptor_key", "descriptor_value"}}}}),
+  EXPECT_CALL(*client_, limit(_, "foo",
+                              testing::ContainerEq(std::vector<Envoy::RateLimit::Descriptor>{
+                                  {{{"descriptor_key", "descriptor_value"}}}}),
                               context))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks)
-                                       -> void { request_callbacks_ = &callbacks; })));
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        request_callbacks_ = &callbacks;
+      })));
 
-  request_headers_.addViaCopy(Http::Headers::get().RequestId, "requestid");
-  request_headers_.addViaCopy(Http::Headers::get().OtSpanContext, "context");
+  request_headers_.addCopy(Http::Headers::get().RequestId, "requestid");
+  request_headers_.addCopy(Http::Headers::get().OtSpanContext, "context");
   EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
-  EXPECT_EQ(FilterDataStatus::StopIterationAndBuffer, filter_->decodeData(data_, false));
+  EXPECT_EQ(FilterDataStatus::StopIterationAndWatermark, filter_->decodeData(data_, false));
   EXPECT_EQ(FilterTrailersStatus::StopIteration, filter_->decodeTrailers(request_headers_));
 
   EXPECT_CALL(filter_callbacks_, continueDecoding());
   EXPECT_CALL(filter_callbacks_.request_info_,
-              setResponseFlag(Http::AccessLog::ResponseFlag::RateLimited)).Times(0);
-  request_callbacks_->complete(::RateLimit::LimitStatus::OK);
+              setResponseFlag(Http::AccessLog::ResponseFlag::RateLimited))
+      .Times(0);
+  request_callbacks_->complete(Envoy::RateLimit::LimitStatus::OK);
 
   EXPECT_EQ(1U,
             cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("ratelimit.ok").value());
@@ -185,11 +190,12 @@ TEST_F(HttpRateLimitFilterTest, ImmediateOkResponse) {
   EXPECT_CALL(vh_rate_limit_, populateDescriptors(_, _, _, _, _))
       .WillOnce(SetArgReferee<1>(descriptor_));
 
-  EXPECT_CALL(*client_, limit(_, "foo", testing::ContainerEq(std::vector<::RateLimit::Descriptor>{
-                                            {{{"descriptor_key", "descriptor_value"}}}}),
+  EXPECT_CALL(*client_, limit(_, "foo",
+                              testing::ContainerEq(std::vector<Envoy::RateLimit::Descriptor>{
+                                  {{{"descriptor_key", "descriptor_value"}}}}),
                               Tracing::EMPTY_CONTEXT))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks) -> void {
-        callbacks.complete(::RateLimit::LimitStatus::OK);
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        callbacks.complete(Envoy::RateLimit::LimitStatus::OK);
       })));
 
   EXPECT_CALL(filter_callbacks_, continueDecoding()).Times(0);
@@ -208,21 +214,24 @@ TEST_F(HttpRateLimitFilterTest, ErrorResponse) {
   EXPECT_CALL(route_rate_limit_, populateDescriptors(_, _, _, _, _))
       .WillOnce(SetArgReferee<1>(descriptor_));
   EXPECT_CALL(*client_, limit(_, _, _, _))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks)
-                                       -> void { request_callbacks_ = &callbacks; })));
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        request_callbacks_ = &callbacks;
+      })));
 
   EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
 
   EXPECT_CALL(filter_callbacks_, continueDecoding());
-  request_callbacks_->complete(::RateLimit::LimitStatus::Error);
+  request_callbacks_->complete(Envoy::RateLimit::LimitStatus::Error);
 
   EXPECT_EQ(FilterDataStatus::Continue, filter_->decodeData(data_, false));
   EXPECT_EQ(FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers_));
   EXPECT_CALL(filter_callbacks_.request_info_,
-              setResponseFlag(Http::AccessLog::ResponseFlag::RateLimited)).Times(0);
+              setResponseFlag(Http::AccessLog::ResponseFlag::RateLimited))
+      .Times(0);
 
-  EXPECT_EQ(1U, cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("ratelimit.error")
-                    .value());
+  EXPECT_EQ(
+      1U,
+      cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("ratelimit.error").value());
 }
 
 TEST_F(HttpRateLimitFilterTest, LimitResponse) {
@@ -232,8 +241,9 @@ TEST_F(HttpRateLimitFilterTest, LimitResponse) {
   EXPECT_CALL(route_rate_limit_, populateDescriptors(_, _, _, _, _))
       .WillOnce(SetArgReferee<1>(descriptor_));
   EXPECT_CALL(*client_, limit(_, _, _, _))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks)
-                                       -> void { request_callbacks_ = &callbacks; })));
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        request_callbacks_ = &callbacks;
+      })));
 
   EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
 
@@ -243,15 +253,17 @@ TEST_F(HttpRateLimitFilterTest, LimitResponse) {
   EXPECT_CALL(filter_callbacks_.request_info_,
               setResponseFlag(Http::AccessLog::ResponseFlag::RateLimited));
 
-  request_callbacks_->complete(::RateLimit::LimitStatus::OverLimit);
+  request_callbacks_->complete(Envoy::RateLimit::LimitStatus::OverLimit);
 
   EXPECT_EQ(1U,
             cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("ratelimit.over_limit")
                 .value());
-  EXPECT_EQ(1U, cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("upstream_rq_4xx")
-                    .value());
-  EXPECT_EQ(1U, cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("upstream_rq_429")
-                    .value());
+  EXPECT_EQ(
+      1U,
+      cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("upstream_rq_4xx").value());
+  EXPECT_EQ(
+      1U,
+      cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("upstream_rq_429").value());
 }
 
 TEST_F(HttpRateLimitFilterTest, LimitResponseRuntimeDisabled) {
@@ -261,15 +273,16 @@ TEST_F(HttpRateLimitFilterTest, LimitResponseRuntimeDisabled) {
   EXPECT_CALL(route_rate_limit_, populateDescriptors(_, _, _, _, _))
       .WillOnce(SetArgReferee<1>(descriptor_));
   EXPECT_CALL(*client_, limit(_, _, _, _))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks)
-                                       -> void { request_callbacks_ = &callbacks; })));
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        request_callbacks_ = &callbacks;
+      })));
 
   EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
 
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("ratelimit.http_filter_enforcing", 100))
       .WillOnce(Return(false));
   EXPECT_CALL(filter_callbacks_, continueDecoding());
-  request_callbacks_->complete(::RateLimit::LimitStatus::OverLimit);
+  request_callbacks_->complete(Envoy::RateLimit::LimitStatus::OverLimit);
 
   EXPECT_EQ(FilterDataStatus::Continue, filter_->decodeData(data_, false));
   EXPECT_EQ(FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers_));
@@ -277,10 +290,12 @@ TEST_F(HttpRateLimitFilterTest, LimitResponseRuntimeDisabled) {
   EXPECT_EQ(1U,
             cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("ratelimit.over_limit")
                 .value());
-  EXPECT_EQ(1U, cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("upstream_rq_4xx")
-                    .value());
-  EXPECT_EQ(1U, cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("upstream_rq_429")
-                    .value());
+  EXPECT_EQ(
+      1U,
+      cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("upstream_rq_4xx").value());
+  EXPECT_EQ(
+      1U,
+      cm_.thread_local_cluster_.cluster_.info_->stats_store_.counter("upstream_rq_429").value());
 }
 
 TEST_F(HttpRateLimitFilterTest, ResetDuringCall) {
@@ -290,13 +305,14 @@ TEST_F(HttpRateLimitFilterTest, ResetDuringCall) {
   EXPECT_CALL(route_rate_limit_, populateDescriptors(_, _, _, _, _))
       .WillOnce(SetArgReferee<1>(descriptor_));
   EXPECT_CALL(*client_, limit(_, _, _, _))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks)
-                                       -> void { request_callbacks_ = &callbacks; })));
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        request_callbacks_ = &callbacks;
+      })));
 
   EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
 
   EXPECT_CALL(*client_, cancel());
-  filter_callbacks_.reset_callback_();
+  filter_->onDestroy();
 }
 
 TEST_F(HttpRateLimitFilterTest, RouteRateLimitDisabledForRouteKey) {
@@ -380,13 +396,15 @@ TEST_F(HttpRateLimitFilterTest, InternalRequestType) {
       .WillOnce(SetArgReferee<1>(descriptor_));
 
   EXPECT_CALL(filter_callbacks_.route_->route_entry_.virtual_host_.rate_limit_policy_,
-              getApplicableRateLimit(0)).Times(1);
+              getApplicableRateLimit(0))
+      .Times(1);
 
-  EXPECT_CALL(*client_, limit(_, "foo", testing::ContainerEq(std::vector<::RateLimit::Descriptor>{
-                                            {{{"descriptor_key", "descriptor_value"}}}}),
+  EXPECT_CALL(*client_, limit(_, "foo",
+                              testing::ContainerEq(std::vector<Envoy::RateLimit::Descriptor>{
+                                  {{{"descriptor_key", "descriptor_value"}}}}),
                               Tracing::EMPTY_CONTEXT))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks) -> void {
-        callbacks.complete(::RateLimit::LimitStatus::OK);
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        callbacks.complete(Envoy::RateLimit::LimitStatus::OK);
       })));
 
   EXPECT_CALL(filter_callbacks_, continueDecoding()).Times(0);
@@ -417,13 +435,15 @@ TEST_F(HttpRateLimitFilterTest, ExternalRequestType) {
       .WillOnce(SetArgReferee<1>(descriptor_));
 
   EXPECT_CALL(filter_callbacks_.route_->route_entry_.virtual_host_.rate_limit_policy_,
-              getApplicableRateLimit(0)).Times(1);
+              getApplicableRateLimit(0))
+      .Times(1);
 
-  EXPECT_CALL(*client_, limit(_, "foo", testing::ContainerEq(std::vector<::RateLimit::Descriptor>{
-                                            {{{"descriptor_key", "descriptor_value"}}}}),
+  EXPECT_CALL(*client_, limit(_, "foo",
+                              testing::ContainerEq(std::vector<Envoy::RateLimit::Descriptor>{
+                                  {{{"descriptor_key", "descriptor_value"}}}}),
                               Tracing::EMPTY_CONTEXT))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks) -> void {
-        callbacks.complete(::RateLimit::LimitStatus::OK);
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        callbacks.complete(Envoy::RateLimit::LimitStatus::OK);
       })));
 
   EXPECT_CALL(filter_callbacks_, continueDecoding()).Times(0);
@@ -451,13 +471,15 @@ TEST_F(HttpRateLimitFilterTest, ExcludeVirtualHost) {
   EXPECT_CALL(filter_callbacks_.route_->route_entry_, includeVirtualHostRateLimits())
       .WillOnce(Return(false));
   EXPECT_CALL(filter_callbacks_.route_->route_entry_.virtual_host_.rate_limit_policy_,
-              getApplicableRateLimit(0)).Times(0);
+              getApplicableRateLimit(0))
+      .Times(0);
 
-  EXPECT_CALL(*client_, limit(_, "foo", testing::ContainerEq(std::vector<::RateLimit::Descriptor>{
-                                            {{{"descriptor_key", "descriptor_value"}}}}),
+  EXPECT_CALL(*client_, limit(_, "foo",
+                              testing::ContainerEq(std::vector<Envoy::RateLimit::Descriptor>{
+                                  {{{"descriptor_key", "descriptor_value"}}}}),
                               Tracing::EMPTY_CONTEXT))
-      .WillOnce(WithArgs<0>(Invoke([&](::RateLimit::RequestCallbacks& callbacks) -> void {
-        callbacks.complete(::RateLimit::LimitStatus::OK);
+      .WillOnce(WithArgs<0>(Invoke([&](Envoy::RateLimit::RequestCallbacks& callbacks) -> void {
+        callbacks.complete(Envoy::RateLimit::LimitStatus::OK);
       })));
 
   EXPECT_CALL(filter_callbacks_, continueDecoding()).Times(0);
@@ -499,5 +521,6 @@ TEST_F(HttpRateLimitFilterTest, DefaultConfigValueTest) {
   EXPECT_EQ(FilterRequestType::Both, config_->requestType());
 }
 
-} // RateLimit
-} // Http
+} // namespace RateLimit
+} // namespace Http
+} // namespace Envoy

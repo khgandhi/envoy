@@ -8,6 +8,7 @@
 #include "common/stats/stats_impl.h"
 #include "common/upstream/upstream_impl.h"
 
+#include "test/common/upstream/utility.h"
 #include "test/mocks/buffer/mocks.h"
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/ratelimit/mocks.h"
@@ -20,13 +21,14 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::InSequence;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 using testing::WithArgs;
+using testing::_;
 
+namespace Envoy {
 namespace Network {
 
 class NetworkFilterManagerTest : public testing::Test, public BufferSource {
@@ -116,7 +118,7 @@ TEST_F(NetworkFilterManagerTest, RateLimitAndTcpProxy) {
   ON_CALL(runtime.snapshot_, featureEnabled("ratelimit.tcp_filter_enforcing", 100))
       .WillByDefault(Return(true));
 
-  Json::ObjectPtr rl_config_loader = Json::Factory::loadFromString(rl_json);
+  Json::ObjectSharedPtr rl_config_loader = Json::Factory::loadFromString(rl_json);
 
   RateLimit::TcpFilter::ConfigSharedPtr rl_config(
       new RateLimit::TcpFilter::Config(*rl_config_loader, stats_store, runtime));
@@ -137,17 +139,19 @@ TEST_F(NetworkFilterManagerTest, RateLimitAndTcpProxy) {
     }
     )EOF";
 
-  Json::ObjectPtr tcp_proxy_config_loader = Json::Factory::loadFromString(tcp_proxy_json);
-  ::Filter::TcpProxyConfigSharedPtr tcp_proxy_config(
-      new ::Filter::TcpProxyConfig(*tcp_proxy_config_loader, cm, stats_store));
-  manager.addReadFilter(ReadFilterSharedPtr{new ::Filter::TcpProxy(tcp_proxy_config, cm)});
+  Json::ObjectSharedPtr tcp_proxy_config_loader = Json::Factory::loadFromString(tcp_proxy_json);
+  Envoy::Filter::TcpProxyConfigSharedPtr tcp_proxy_config(
+      new Envoy::Filter::TcpProxyConfig(*tcp_proxy_config_loader, cm, stats_store));
+  manager.addReadFilter(ReadFilterSharedPtr{new Envoy::Filter::TcpProxy(tcp_proxy_config, cm)});
 
   RateLimit::RequestCallbacks* request_callbacks{};
-  EXPECT_CALL(*rl_client, limit(_, "foo", testing::ContainerEq(std::vector<RateLimit::Descriptor>{
-                                              {{{"hello", "world"}}}}),
+  EXPECT_CALL(*rl_client, limit(_, "foo",
+                                testing::ContainerEq(
+                                    std::vector<RateLimit::Descriptor>{{{{"hello", "world"}}}}),
                                 Tracing::EMPTY_CONTEXT))
-      .WillOnce(WithArgs<0>(Invoke([&](RateLimit::RequestCallbacks& callbacks)
-                                       -> void { request_callbacks = &callbacks; })));
+      .WillOnce(WithArgs<0>(Invoke([&](RateLimit::RequestCallbacks& callbacks) -> void {
+        request_callbacks = &callbacks;
+      })));
 
   EXPECT_EQ(manager.initializeReadFilters(), true);
 
@@ -155,14 +159,13 @@ TEST_F(NetworkFilterManagerTest, RateLimitAndTcpProxy) {
       new NiceMock<Network::MockClientConnection>();
   Upstream::MockHost::MockCreateConnectionData conn_info;
   conn_info.connection_ = upstream_connection;
-  conn_info.host_.reset(new Upstream::HostImpl(cm.thread_local_cluster_.cluster_.info_, "",
-                                               Utility::resolveUrl("tcp://127.0.0.1:80"), false, 1,
-                                               ""));
-  EXPECT_CALL(cm, tcpConnForCluster_("fake_cluster")).WillOnce(Return(conn_info));
+  conn_info.host_description_ =
+      Upstream::makeTestHost(cm.thread_local_cluster_.cluster_.info_, "tcp://127.0.0.1:80");
+  EXPECT_CALL(cm, tcpConnForCluster_("fake_cluster", _)).WillOnce(Return(conn_info));
 
   request_callbacks->complete(RateLimit::LimitStatus::OK);
 
-  upstream_connection->raiseEvents(Network::ConnectionEvent::Connected);
+  upstream_connection->raiseEvent(Network::ConnectionEvent::Connected);
 
   Buffer::OwnedImpl buffer("hello");
   EXPECT_CALL(*upstream_connection, write(BufferEqual(&buffer)));
@@ -170,4 +173,5 @@ TEST_F(NetworkFilterManagerTest, RateLimitAndTcpProxy) {
   manager.onRead();
 }
 
-} // Network
+} // namespace Network
+} // namespace Envoy

@@ -8,6 +8,7 @@
 #include "common/stats/stats_impl.h"
 #include "common/upstream/upstream_impl.h"
 
+#include "test/common/upstream/utility.h"
 #include "test/mocks/buffer/mocks.h"
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/runtime/mocks.h"
@@ -18,12 +19,13 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
 using testing::SaveArg;
+using testing::_;
 
+namespace Envoy {
 namespace Filter {
 
 TEST(TcpProxyConfigTest, NoRouteConfig) {
@@ -33,7 +35,7 @@ TEST(TcpProxyConfigTest, NoRouteConfig) {
     }
     )EOF";
 
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
+  Json::ObjectSharedPtr config = Json::Factory::loadFromString(json);
   NiceMock<Upstream::MockClusterManager> cluster_manager;
   EXPECT_THROW(TcpProxyConfig(*config, cluster_manager,
                               cluster_manager.thread_local_cluster_.cluster_.info_->stats_store_),
@@ -54,7 +56,7 @@ TEST(TcpProxyConfigTest, NoCluster) {
     }
     )EOF";
 
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
+  Json::ObjectSharedPtr config = Json::Factory::loadFromString(json);
   NiceMock<Upstream::MockClusterManager> cluster_manager;
   EXPECT_CALL(cluster_manager, get("fake_cluster")).WillOnce(Return(nullptr));
   EXPECT_THROW(TcpProxyConfig(*config, cluster_manager,
@@ -76,7 +78,7 @@ TEST(TcpProxyConfigTest, BadTcpProxyConfig) {
    }
   )EOF";
 
-  Json::ObjectPtr json_config = Json::Factory::loadFromString(json_string);
+  Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json_string);
   NiceMock<Upstream::MockClusterManager> cluster_manager;
   EXPECT_THROW(TcpProxyConfig(*json_config, cluster_manager,
                               cluster_manager.thread_local_cluster_.cluster_.info_->stats_store_),
@@ -100,12 +102,28 @@ TEST(TcpProxyConfigTest, Routes) {
             "cluster": "with_destination_ip_list"
           },
           {
-            "destination_ports": "1-1024,2048-4096,12345", 
+            "destination_ip_list": [
+              "::1/128",
+              "2001:abcd::/64"
+            ],
+            "cluster": "with_v6_destination"
+          },
+          {
+            "destination_ports": "1-1024,2048-4096,12345",
             "cluster": "with_destination_ports"
           },
-          {  
-            "source_ports": "23457,23459", 
+          {
+            "source_ports": "23457,23459",
             "cluster": "with_source_ports"
+          },
+          {
+            "destination_ip_list": [
+              "2002::/32"
+            ],
+            "source_ip_list": [
+              "2003::/64"
+            ],
+            "cluster": "with_v6_source_and_destination"
           },
           {
             "destination_ip_list": [
@@ -126,7 +144,7 @@ TEST(TcpProxyConfigTest, Routes) {
     }
     )EOF";
 
-  Json::ObjectPtr json_config = Json::Factory::loadFromString(json);
+  Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json);
   NiceMock<Upstream::MockClusterManager> cm_;
 
   TcpProxyConfig config_obj(*json_config, cm_,
@@ -269,6 +287,43 @@ TEST(TcpProxyConfigTest, Routes) {
     EXPECT_CALL(connection, remoteAddress()).WillRepeatedly(ReturnRef(remote_address));
     EXPECT_EQ(std::string("catch_all"), config_obj.getRouteFromEntries(connection));
   }
+
+  {
+    // hit route with destination_ip (::1/128)
+    NiceMock<Network::MockConnection> connection;
+    Network::Address::Ipv6Instance local_address("::1");
+    EXPECT_CALL(connection, localAddress()).WillRepeatedly(ReturnRef(local_address));
+    EXPECT_EQ(std::string("with_v6_destination"), config_obj.getRouteFromEntries(connection));
+  }
+
+  {
+    // hit route with destination_ip (2001:abcd/64")
+    NiceMock<Network::MockConnection> connection;
+    Network::Address::Ipv6Instance local_address("2001:abcd:0:0:1::");
+    EXPECT_CALL(connection, localAddress()).WillRepeatedly(ReturnRef(local_address));
+    EXPECT_EQ(std::string("with_v6_destination"), config_obj.getRouteFromEntries(connection));
+  }
+
+  {
+    // hit route with destination_ip ("2002::/32") and source_ip ("2003::/64")
+    NiceMock<Network::MockConnection> connection;
+    Network::Address::Ipv6Instance local_address("2002:0:0:0:0:0::1");
+    EXPECT_CALL(connection, localAddress()).WillRepeatedly(ReturnRef(local_address));
+    Network::Address::Ipv6Instance remote_address("2003:0:0:0:0::5");
+    EXPECT_CALL(connection, remoteAddress()).WillRepeatedly(ReturnRef(remote_address));
+    EXPECT_EQ(std::string("with_v6_source_and_destination"),
+              config_obj.getRouteFromEntries(connection));
+  }
+
+  {
+    // fall through
+    NiceMock<Network::MockConnection> connection;
+    Network::Address::Ipv6Instance local_address("2004::");
+    EXPECT_CALL(connection, localAddress()).WillRepeatedly(ReturnRef(local_address));
+    Network::Address::Ipv6Instance remote_address("::");
+    EXPECT_CALL(connection, remoteAddress()).WillRepeatedly(ReturnRef(remote_address));
+    EXPECT_EQ(std::string("catch_all"), config_obj.getRouteFromEntries(connection));
+  }
 }
 
 TEST(TcpProxyConfigTest, EmptyRouteConfig) {
@@ -282,7 +337,7 @@ TEST(TcpProxyConfigTest, EmptyRouteConfig) {
     }
     )EOF";
 
-  Json::ObjectPtr json_config = Json::Factory::loadFromString(json);
+  Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json);
   NiceMock<Upstream::MockClusterManager> cm_;
 
   TcpProxyConfig config_obj(*json_config, cm_,
@@ -308,7 +363,7 @@ public:
     }
     )EOF";
 
-    Json::ObjectPtr config = Json::Factory::loadFromString(json);
+    Json::ObjectSharedPtr config = Json::Factory::loadFromString(json);
     config_.reset(
         new TcpProxyConfig(*config, cluster_manager_,
                            cluster_manager_.thread_local_cluster_.cluster_.info_->stats_store_));
@@ -322,15 +377,16 @@ public:
       upstream_connection_ = new NiceMock<Network::MockClientConnection>();
       Upstream::MockHost::MockCreateConnectionData conn_info;
       conn_info.connection_ = upstream_connection_;
-      conn_info.host_.reset(
-          new Upstream::HostImpl(cluster_manager_.thread_local_cluster_.cluster_.info_, "",
-                                 Network::Utility::resolveUrl("tcp://127.0.0.1:80"), false, 1, ""));
-      EXPECT_CALL(cluster_manager_, tcpConnForCluster_("fake_cluster")).WillOnce(Return(conn_info));
+      conn_info.host_description_ = Upstream::makeTestHost(
+          cluster_manager_.thread_local_cluster_.cluster_.info_, "tcp://127.0.0.1:80");
+      EXPECT_CALL(cluster_manager_, tcpConnForCluster_("fake_cluster", _))
+          .WillOnce(Return(conn_info));
       EXPECT_CALL(*upstream_connection_, addReadFilter(_))
           .WillOnce(SaveArg<0>(&upstream_read_filter_));
     } else {
       Upstream::MockHost::MockCreateConnectionData conn_info;
-      EXPECT_CALL(cluster_manager_, tcpConnForCluster_("fake_cluster")).WillOnce(Return(conn_info));
+      EXPECT_CALL(cluster_manager_, tcpConnForCluster_("fake_cluster", _))
+          .WillOnce(Return(conn_info));
     }
 
     filter_.reset(new TcpProxy(config_, cluster_manager_));
@@ -338,6 +394,9 @@ public:
     EXPECT_EQ(return_connection ? Network::FilterStatus::Continue
                                 : Network::FilterStatus::StopIteration,
               filter_->onNewConnection());
+
+    EXPECT_EQ(Optional<uint64_t>(), filter_->hashKey());
+    EXPECT_EQ(&filter_callbacks_.connection_, filter_->downstreamConnection());
   }
 
   TcpProxyConfigSharedPtr config_;
@@ -358,14 +417,14 @@ TEST_F(TcpProxyTest, UpstreamDisconnect) {
   filter_->onData(buffer);
 
   EXPECT_CALL(*connect_timer_, disableTimer());
-  upstream_connection_->raiseEvents(Network::ConnectionEvent::Connected);
+  upstream_connection_->raiseEvent(Network::ConnectionEvent::Connected);
 
   Buffer::OwnedImpl response("world");
   EXPECT_CALL(filter_callbacks_.connection_, write(BufferEqual(&response)));
   upstream_read_filter_->onData(response);
 
   EXPECT_CALL(filter_callbacks_.connection_, close(Network::ConnectionCloseType::FlushWrite));
-  upstream_connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  upstream_connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
 }
 
 TEST_F(TcpProxyTest, DownstreamDisconnectRemote) {
@@ -376,14 +435,14 @@ TEST_F(TcpProxyTest, DownstreamDisconnectRemote) {
   filter_->onData(buffer);
 
   EXPECT_CALL(*connect_timer_, disableTimer());
-  upstream_connection_->raiseEvents(Network::ConnectionEvent::Connected);
+  upstream_connection_->raiseEvent(Network::ConnectionEvent::Connected);
 
   Buffer::OwnedImpl response("world");
   EXPECT_CALL(filter_callbacks_.connection_, write(BufferEqual(&response)));
   upstream_read_filter_->onData(response);
 
   EXPECT_CALL(*upstream_connection_, close(Network::ConnectionCloseType::NoFlush));
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::RemoteClose);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
 }
 
 TEST_F(TcpProxyTest, DownstreamDisconnectLocal) {
@@ -394,14 +453,14 @@ TEST_F(TcpProxyTest, DownstreamDisconnectLocal) {
   filter_->onData(buffer);
 
   EXPECT_CALL(*connect_timer_, disableTimer());
-  upstream_connection_->raiseEvents(Network::ConnectionEvent::Connected);
+  upstream_connection_->raiseEvent(Network::ConnectionEvent::Connected);
 
   Buffer::OwnedImpl response("world");
   EXPECT_CALL(filter_callbacks_.connection_, write(BufferEqual(&response)));
   upstream_read_filter_->onData(response);
 
   EXPECT_CALL(*upstream_connection_, close(Network::ConnectionCloseType::NoFlush));
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::LocalClose);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::LocalClose);
 }
 
 TEST_F(TcpProxyTest, UpstreamConnectTimeout) {
@@ -428,7 +487,7 @@ TEST_F(TcpProxyTest, DisconnectBeforeData) {
   filter_.reset(new TcpProxy(config_, cluster_manager_));
   filter_->initializeReadFilterCallbacks(filter_callbacks_);
 
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::RemoteClose);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
 }
 
 TEST_F(TcpProxyTest, UpstreamConnectFailure) {
@@ -440,7 +499,7 @@ TEST_F(TcpProxyTest, UpstreamConnectFailure) {
 
   EXPECT_CALL(filter_callbacks_.connection_, close(Network::ConnectionCloseType::FlushWrite));
   EXPECT_CALL(*connect_timer_, disableTimer());
-  upstream_connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  upstream_connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_EQ(1U, cluster_manager_.thread_local_cluster_.cluster_.info_->stats_store_
                     .counter("upstream_cx_connect_fail")
                     .value());
@@ -479,7 +538,7 @@ public:
     }
     )EOF";
 
-    Json::ObjectPtr config = Json::Factory::loadFromString(json);
+    Json::ObjectSharedPtr config = Json::Factory::loadFromString(json);
     config_.reset(
         new TcpProxyConfig(*config, cluster_manager_,
                            cluster_manager_.thread_local_cluster_.cluster_.info_->stats_store_));
@@ -528,7 +587,7 @@ TEST_F(TcpProxyRoutingTest, RoutableConnection) {
   EXPECT_CALL(connection_, localAddress()).WillRepeatedly(ReturnRef(local_address));
 
   // Expect filter to try to open a connection to specified cluster
-  EXPECT_CALL(cluster_manager_, tcpConnForCluster_("fake_cluster"));
+  EXPECT_CALL(cluster_manager_, tcpConnForCluster_("fake_cluster", _));
 
   filter_->onNewConnection();
 
@@ -536,4 +595,5 @@ TEST_F(TcpProxyRoutingTest, RoutableConnection) {
   EXPECT_EQ(non_routable_cx, config_->stats().downstream_cx_no_route_.value());
 }
 
-} // Filter
+} // namespace Filter
+} // namespace Envoy

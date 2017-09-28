@@ -1,5 +1,6 @@
 #pragma once
 
+namespace Envoy {
 namespace Http {
 
 /**
@@ -7,4 +8,5 @@ namespace Http {
  */
 enum class Protocol { Http10, Http11, Http2 };
 
-} // Http
+} // namespace Http
+} // namespace Envoy

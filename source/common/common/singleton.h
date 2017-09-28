@@ -1,7 +1,9 @@
 #pragma once
 
+namespace Envoy {
+
 /**
- * Immutable singleton pattern.
+ * Immutable singleton pattern. See singleton/manager.h for mutable/destroyable singletons.
  */
 template <class T> class ConstSingleton {
 public:
@@ -15,4 +17,4 @@ public:
   }
 };
 
-// TODO(htuch): Add a mutable Singleton if there is a need for this.
+} // namespace Envoy

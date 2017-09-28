@@ -7,6 +7,7 @@
 #include "gperftools/heap-profiler.h"
 #include "gperftools/profiler.h"
 
+namespace Envoy {
 namespace Profiler {
 
 bool Cpu::profilerEnabled() { return ProfilingIsEnabledForAllThreads(); }
@@ -24,16 +25,19 @@ void Heap::forceLink() {
   HeapProfilerDump("");
 }
 
-} // Profiler
+} // namespace Profiler
+} // namespace Envoy
 
 #else
 
+namespace Envoy {
 namespace Profiler {
 
 bool Cpu::profilerEnabled() { return false; }
 bool Cpu::startProfiler(const std::string&) { return false; }
 void Cpu::stopProfiler() {}
 
-} // Profiler
+} // namespace Profiler
+} // namespace Envoy
 
 #endif // #ifdef TCMALLOC

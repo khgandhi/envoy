@@ -11,46 +11,11 @@
 #include "common/common/assert.h"
 #include "common/common/hex.h"
 
+#include "fmt/format.h"
 #include "openssl/x509v3.h"
-#include "spdlog/spdlog.h"
 
+namespace Envoy {
 namespace Ssl {
-
-/**
- * The following function was generated with 'openssl dhparam -C 2048'
- */
-DH* get_dh2048() {
-  static unsigned char dh2048_p[] = {
-      0xBC, 0x7B, 0xC2, 0x9D, 0xE5, 0x34, 0x1E, 0xD3, 0xD9, 0x8E, 0x31, 0x43, 0x99, 0xD9, 0x30,
-      0x6F, 0x1B, 0xFD, 0xB1, 0x2A, 0x8C, 0xFE, 0xD1, 0x99, 0xE0, 0x9F, 0x61, 0xEC, 0xAE, 0x87,
-      0xF7, 0x87, 0xAF, 0x8C, 0xDE, 0x1F, 0x89, 0x08, 0x78, 0xF8, 0x9C, 0x26, 0xB1, 0x2E, 0xD3,
-      0xF3, 0xEC, 0x7C, 0x79, 0xE3, 0x98, 0x72, 0xDD, 0xB8, 0xAD, 0xCD, 0x75, 0xFA, 0x7E, 0xFC,
-      0xD5, 0xAF, 0x18, 0xEF, 0x86, 0x44, 0xC7, 0xA6, 0xCD, 0x06, 0x23, 0x21, 0x77, 0x33, 0xE2,
-      0xBC, 0x91, 0xC0, 0x63, 0xBF, 0xD9, 0x4B, 0x31, 0x76, 0x01, 0x6E, 0x41, 0xA3, 0x96, 0x2A,
-      0xF8, 0x1E, 0xE4, 0x8E, 0xC3, 0x9A, 0x70, 0x69, 0x03, 0xA8, 0xDA, 0x1A, 0xF1, 0x26, 0xCC,
-      0x14, 0x63, 0x7D, 0xAE, 0xDF, 0xBE, 0x02, 0x18, 0x32, 0xBB, 0xEA, 0x73, 0xFF, 0x37, 0x36,
-      0xCC, 0x63, 0xBC, 0x23, 0xB1, 0x5E, 0x11, 0xE1, 0x10, 0xFB, 0xE4, 0x7E, 0x2C, 0x60, 0x37,
-      0xC9, 0xE0, 0x68, 0xC2, 0x7A, 0x7B, 0xAD, 0x0A, 0x17, 0xB4, 0x45, 0xCD, 0x02, 0xF0, 0x88,
-      0xB8, 0xD9, 0x0E, 0x89, 0xA0, 0x2E, 0x39, 0xA6, 0xB7, 0xE2, 0x1F, 0xBA, 0xFC, 0xA3, 0x8A,
-      0xB4, 0x35, 0x72, 0x39, 0xC6, 0xC2, 0x67, 0xB9, 0xCD, 0xF2, 0xBF, 0x20, 0xEA, 0xA8, 0xF3,
-      0xB0, 0x31, 0xA3, 0x54, 0x39, 0x3B, 0x85, 0xFF, 0xC3, 0x2E, 0x6A, 0x0B, 0xAF, 0x7E, 0x3D,
-      0x2A, 0xCD, 0x8A, 0xD7, 0x1E, 0xE3, 0x6C, 0xFE, 0x27, 0x91, 0x03, 0xCD, 0xC7, 0x15, 0xB1,
-      0x8C, 0x76, 0xB7, 0x13, 0xB8, 0x9A, 0x2A, 0xCA, 0x2D, 0x3E, 0x14, 0xC9, 0xEF, 0xCC, 0x9D,
-      0xB2, 0xFA, 0x06, 0xE6, 0x04, 0xF1, 0x2B, 0x68, 0x61, 0x56, 0x84, 0x00, 0xB9, 0x71, 0x25,
-      0x1B, 0xD0, 0x6A, 0x58, 0x63, 0xF6, 0x86, 0x05, 0x04, 0x49, 0x1E, 0xCB, 0x3E, 0x46, 0x96,
-      0x93,
-  };
-
-  static unsigned char dh2048_g[] = {
-      0x02,
-  };
-
-  DH* dh = DH_new();
-  dh->p = BN_bin2bn(dh2048_p, sizeof(dh2048_p), nullptr);
-  dh->g = BN_bin2bn(dh2048_g, sizeof(dh2048_g), nullptr);
-  RELEASE_ASSERT(dh->p != nullptr && dh->g != nullptr);
-  return dh;
-}
 
 const unsigned char ContextImpl::SERVER_SESSION_ID_CONTEXT = 1;
 
@@ -68,6 +33,8 @@ ContextImpl::ContextImpl(ContextManagerImpl& parent, Stats::Scope& scope, Contex
     throw EnvoyException(fmt::format("Failed to initialize ECDH curves {}", config.ecdhCurves()));
   }
 
+  int verify_mode = SSL_VERIFY_NONE;
+
   if (!config.caCertFile().empty()) {
     ca_cert_ = loadCert(config.caCertFile());
     ca_file_path_ = config.caCertFile();
@@ -77,13 +44,25 @@ ContextImpl::ContextImpl(ContextManagerImpl& parent, Stats::Scope& scope, Contex
       throw EnvoyException(
           fmt::format("Failed to load verify locations file {}", config.caCertFile()));
     }
+    verify_mode = SSL_VERIFY_PEER;
+  }
 
-    // This will send an acceptable CA list to browsers which will prevent pop ups.
-    rc = SSL_CTX_add_client_CA(ctx_.get(), ca_cert_.get());
-    RELEASE_ASSERT(1 == rc);
+  if (!config.verifySubjectAltNameList().empty()) {
+    verify_subject_alt_name_list_ = config.verifySubjectAltNameList();
+    verify_mode = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+  }
 
-    // enable peer certificate verification
-    SSL_CTX_set_verify(ctx_.get(), SSL_VERIFY_PEER, nullptr);
+  if (!config.verifyCertificateHash().empty()) {
+    std::string hash = config.verifyCertificateHash();
+    // remove ':' delimiters from hex string
+    hash.erase(std::remove(hash.begin(), hash.end(), ':'), hash.end());
+    verify_certificate_hash_ = Hex::decode(hash);
+    verify_mode = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+  }
+
+  if (verify_mode != SSL_VERIFY_NONE) {
+    SSL_CTX_set_verify(ctx_.get(), verify_mode, nullptr);
+    SSL_CTX_set_cert_verify_callback(ctx_.get(), ContextImpl::verifyCallback, this);
   }
 
   if (!config.certChainFile().empty()) {
@@ -102,29 +81,10 @@ ContextImpl::ContextImpl(ContextManagerImpl& parent, Stats::Scope& scope, Contex
     }
   }
 
-  verify_subject_alt_name_list_ = config.verifySubjectAltNameList();
-
-  if (!config.verifyCertificateHash().empty()) {
-    std::string hash = config.verifyCertificateHash();
-    // remove ':' delimiters from hex string
-    hash.erase(std::remove(hash.begin(), hash.end(), ':'), hash.end());
-    verify_certificate_hash_ = Hex::decode(hash);
-  }
-
   SSL_CTX_set_options(ctx_.get(), SSL_OP_NO_SSLv3);
 
   // use the server's cipher list preferences
   SSL_CTX_set_options(ctx_.get(), SSL_OP_CIPHER_SERVER_PREFERENCE);
-
-  // Initialize DH params - 2048 bits was chosen based on recommendations from:
-  // https://www.openssl.org/blog/blog/2015/05/20/logjam-freak-upcoming-changes/
-  DH* dh = get_dh2048();
-  long rc = SSL_CTX_set_tmp_dh(ctx_.get(), dh);
-  DH_free(dh);
-
-  if (1 != rc) {
-    throw EnvoyException(fmt::format("Failed to initialize DH params"));
-  }
 
   SSL_CTX_set_session_id_context(ctx_.get(), &SERVER_SESSION_ID_CONTEXT,
                                  sizeof SERVER_SESSION_ID_CONTEXT);
@@ -182,35 +142,46 @@ bssl::UniquePtr<SSL> ContextImpl::newSsl() const {
   return bssl::UniquePtr<SSL>(SSL_new(ctx_.get()));
 }
 
-bool ContextImpl::verifyPeer(SSL* ssl) const {
-  bool verified = true;
+int ContextImpl::verifyCallback(X509_STORE_CTX* store_ctx, void* arg) {
+  ContextImpl* impl = reinterpret_cast<ContextImpl*>(arg);
 
+  int ret = X509_verify_cert(store_ctx);
+  if (ret <= 0) {
+    impl->stats_.fail_verify_error_.inc();
+    return ret;
+  }
+
+  SSL* ssl = reinterpret_cast<SSL*>(
+      X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx()));
+  bssl::UniquePtr<X509> cert(SSL_get_peer_certificate(ssl));
+  return impl->verifyCertificate(cert.get());
+}
+
+int ContextImpl::verifyCertificate(X509* cert) {
+  if (!verify_subject_alt_name_list_.empty() &&
+      !verifySubjectAltName(cert, verify_subject_alt_name_list_)) {
+    stats_.fail_verify_san_.inc();
+    return 0;
+  }
+
+  if (!verify_certificate_hash_.empty() && !verifyCertificateHash(cert, verify_certificate_hash_)) {
+    stats_.fail_verify_cert_hash_.inc();
+    return 0;
+  }
+
+  return 1;
+}
+
+void ContextImpl::logHandshake(SSL* ssl) const {
   stats_.handshake_.inc();
 
   const char* cipher = SSL_get_cipher_name(ssl);
   scope_.counter(fmt::format("ssl.ciphers.{}", std::string{cipher})).inc();
 
   bssl::UniquePtr<X509> cert(SSL_get_peer_certificate(ssl));
-
   if (!cert.get()) {
     stats_.no_certificate_.inc();
   }
-
-  if (!verify_subject_alt_name_list_.empty()) {
-    if (cert.get() == nullptr || !verifySubjectAltName(cert.get(), verify_subject_alt_name_list_)) {
-      stats_.fail_verify_san_.inc();
-      verified = false;
-    }
-  }
-
-  if (!verify_certificate_hash_.empty()) {
-    if (cert.get() == nullptr || !verifyCertificateHash(cert.get(), verify_certificate_hash_)) {
-      stats_.fail_verify_cert_hash_.inc();
-      verified = false;
-    }
-  }
-
-  return verified;
 }
 
 bool ContextImpl::verifySubjectAltName(X509* cert,
@@ -348,7 +319,7 @@ bssl::UniquePtr<X509> ContextImpl::loadCert(const std::string& cert_file) {
 };
 
 ClientContextImpl::ClientContextImpl(ContextManagerImpl& parent, Stats::Scope& scope,
-                                     ContextConfig& config)
+                                     ClientContextConfig& config)
     : ContextImpl(parent, scope, config) {
   if (!parsed_alpn_protocols_.empty()) {
     int rc = SSL_CTX_set_alpn_protos(ctx_.get(), &parsed_alpn_protocols_[0],
@@ -373,19 +344,33 @@ bssl::UniquePtr<SSL> ClientContextImpl::newSsl() const {
 }
 
 ServerContextImpl::ServerContextImpl(ContextManagerImpl& parent, Stats::Scope& scope,
-                                     ContextConfig& config, Runtime::Loader& runtime)
+                                     ServerContextConfig& config, Runtime::Loader& runtime)
     : ContextImpl(parent, scope, config), runtime_(runtime) {
+  if (!config.caCertFile().empty()) {
+    bssl::UniquePtr<STACK_OF(X509_NAME)> list(SSL_load_client_CA_file(config.caCertFile().c_str()));
+    if (nullptr == list) {
+      throw EnvoyException(fmt::format("Failed to load client CA file {}", config.caCertFile()));
+    }
+    SSL_CTX_set_client_CA_list(ctx_.get(), list.release());
+
+    // SSL_VERIFY_PEER or stronger mode was already set in ContextImpl::ContextImpl().
+    if (config.requireClientCertificate()) {
+      SSL_CTX_set_verify(ctx_.get(), SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+    }
+  }
+
   parsed_alt_alpn_protocols_ = parseAlpnProtocols(config.altAlpnProtocols());
 
   if (!parsed_alpn_protocols_.empty()) {
     SSL_CTX_set_alpn_select_cb(ctx_.get(),
                                [](SSL*, const unsigned char** out, unsigned char* outlen,
                                   const unsigned char* in, unsigned int inlen, void* arg) -> int {
-                                 return static_cast<ServerContextImpl*>(arg)
-                                     ->alpnSelectCallback(out, outlen, in, inlen);
+                                 return static_cast<ServerContextImpl*>(arg)->alpnSelectCallback(
+                                     out, outlen, in, inlen);
                                },
                                this);
   }
 }
 
-} // Ssl
+} // namespace Ssl
+} // namespace Envoy

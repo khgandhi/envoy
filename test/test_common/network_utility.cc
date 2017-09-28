@@ -13,16 +13,17 @@
 
 #include "test/test_common/utility.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 namespace Network {
 namespace Test {
 
 Address::InstanceConstSharedPtr findOrCheckFreePort(Address::InstanceConstSharedPtr addr_port,
                                                     Address::SocketType type) {
   if (addr_port == nullptr || addr_port->type() != Address::Type::Ip) {
-    ADD_FAILURE() << "Not an internet address: " << (addr_port == nullptr ? "nullptr"
-                                                                          : addr_port->asString());
+    ADD_FAILURE() << "Not an internet address: "
+                  << (addr_port == nullptr ? "nullptr" : addr_port->asString());
     return nullptr;
   }
   const int fd = addr_port->socket(type);
@@ -71,7 +72,7 @@ Address::InstanceConstSharedPtr findOrCheckFreePort(Address::InstanceConstShared
 
 Address::InstanceConstSharedPtr findOrCheckFreePort(const std::string& addr_port,
                                                     Address::SocketType type) {
-  auto instance = Address::parseInternetAddressAndPort(addr_port);
+  auto instance = Utility::parseInternetAddressAndPort(addr_port);
   if (instance != nullptr) {
     instance = findOrCheckFreePort(instance, type);
   } else {
@@ -80,28 +81,67 @@ Address::InstanceConstSharedPtr findOrCheckFreePort(const std::string& addr_port
   return instance;
 }
 
-Address::InstanceConstSharedPtr getSomeLoopbackAddress(Address::IpVersion version) {
-  if (version == Address::IpVersion::v4) {
-    // Pick a random address in 127.0.0.0/8.
-    // TODO(jamessynge): Consider how to use $GTEST_RANDOM_SEED for seeding the rng.
-    // Perhaps we need a TestRuntime::getRandomGenerator() or similar.
-    Runtime::RandomGeneratorImpl rng;
-    sockaddr_in sin;
-    sin.sin_family = AF_INET;
-    sin.sin_port = 0;
-    sin.sin_addr.s_addr = static_cast<uint32_t>(rng.random() % 0xffffffff);
-    uint8_t* address_bytes = reinterpret_cast<uint8_t*>(&sin.sin_addr.s_addr);
-    address_bytes[0] = 127;
-    return std::make_shared<Address::Ipv4Instance>(&sin);
-  } else {
-    // There is only one IPv6 loopback address.
-    return Network::Utility::getIpv6LoopbackAddress();
+const std::string getLoopbackAddressUrlString(const Address::IpVersion version) {
+  if (version == Address::IpVersion::v6) {
+    return std::string("[::1]");
   }
+  return std::string("127.0.0.1");
+}
+
+const std::string getLoopbackAddressString(const Address::IpVersion version) {
+  if (version == Address::IpVersion::v6) {
+    return std::string("::1");
+  }
+  return std::string("127.0.0.1");
+}
+
+const std::string getAnyAddressUrlString(const Address::IpVersion version) {
+  if (version == Address::IpVersion::v6) {
+    return std::string("[::]");
+  }
+  return std::string("0.0.0.0");
+}
+
+const std::string addressVersionAsString(const Address::IpVersion version) {
+  if (version == Address::IpVersion::v4) {
+    return std::string("v4");
+  }
+  return std::string("v6");
+}
+
+Address::InstanceConstSharedPtr getCanonicalLoopbackAddress(Address::IpVersion version) {
+  if (version == Address::IpVersion::v4) {
+    return Network::Utility::getCanonicalIpv4LoopbackAddress();
+  }
+  return Network::Utility::getIpv6LoopbackAddress();
+}
+
+Address::InstanceConstSharedPtr getAnyAddress(const Address::IpVersion version) {
+  if (version == Address::IpVersion::v4) {
+    return Network::Utility::getIpv4AnyAddress();
+  }
+  return Network::Utility::getIpv6AnyAddress();
+}
+
+bool supportsIpVersion(const Address::IpVersion version) {
+  Address::InstanceConstSharedPtr addr = getCanonicalLoopbackAddress(version);
+  const int fd = addr->socket(Address::SocketType::Stream);
+  if (fd < 0) {
+    // Socket creation failed.
+    return false;
+  }
+  if (0 != addr->bind(fd)) {
+    // Socket bind failed.
+    RELEASE_ASSERT(::close(fd) == 0);
+    return false;
+  }
+  RELEASE_ASSERT(::close(fd) == 0);
+  return true;
 }
 
 std::pair<Address::InstanceConstSharedPtr, int> bindFreeLoopbackPort(Address::IpVersion version,
                                                                      Address::SocketType type) {
-  Address::InstanceConstSharedPtr addr = getSomeLoopbackAddress(version);
+  Address::InstanceConstSharedPtr addr = getCanonicalLoopbackAddress(version);
   const char* failing_fn = nullptr;
   const int fd = addr->socket(type);
   if (fd < 0) {
@@ -121,5 +161,6 @@ std::pair<Address::InstanceConstSharedPtr, int> bindFreeLoopbackPort(Address::Ip
   throw EnvoyException(msg);
 }
 
-} // Test
-} // Network
+} // namespace Test
+} // namespace Network
+} // namespace Envoy

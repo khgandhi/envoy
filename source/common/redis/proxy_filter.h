@@ -14,6 +14,7 @@
 #include "common/json/json_loader.h"
 #include "common/json/json_validator.h"
 
+namespace Envoy {
 namespace Redis {
 
 /**
@@ -78,7 +79,9 @@ public:
   Network::FilterStatus onNewConnection() override { return Network::FilterStatus::Continue; }
 
   // Network::ConnectionCallbacks
-  void onEvent(uint32_t events) override;
+  void onEvent(Network::ConnectionEvent event) override;
+  void onAboveWriteBufferHighWatermark() override {}
+  void onBelowWriteBufferLowWatermark() override {}
 
   // Redis::DecoderCallbacks
   void onRespValue(RespValuePtr&& value) override;
@@ -108,3 +111,4 @@ private:
 };
 
 } // Redis
+} // namespace Envoy

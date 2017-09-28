@@ -8,7 +8,6 @@ TCP proxy :ref:`architecture overview <arch_overview_tcp_proxy>`.
 .. code-block:: json
 
   {
-    "type": "read",
     "name": "tcp_proxy",
     "config": {
       "stat_prefix": "...",
@@ -64,7 +63,7 @@ cluster
   to when a the downstream network connection matches the specified criteria.
 
 destination_ip_list
-  *(optional, array)*  An optional list of IPv4 subnets in the form "a.b.c.d/xx".
+  *(optional, array)*  An optional list of IP address subnets in the form "ip_address/xx".
   The criteria is satisfied if the destination IP address of the downstream connection is
   contained in at least one of the specified subnets.
   If the parameter is not specified or the list is empty, the destination IP address is ignored.
@@ -76,7 +75,8 @@ destination_ip_list
     [
       "192.168.3.0/24",
       "50.1.2.3/32",
-      "10.15.0.0/16"
+      "10.15.0.0/16",
+      "2001:abcd::/64"
     ]
 
 destination_ports
@@ -94,7 +94,7 @@ destination_ports
   }
 
 source_ip_list
-  *(optional, array)*  An optional list of IPv4 subnets in the form "a.b.c.d/xx".
+  *(optional, array)*  An optional list of IP address subnets in the form "ip_address/xx".
   The criteria is satisfied if the source IP address of the downstream connection is contained
   in at least one of the specified subnets. If the parameter is not specified or the list is empty,
   the source IP address is ignored. Example:
@@ -104,7 +104,8 @@ source_ip_list
     [
       "192.168.3.0/24",
       "50.1.2.3/32",
-      "10.15.0.0/16"
+      "10.15.0.0/16",
+      "2001:abcd::/64"
     ]
 
 source_ports
@@ -136,4 +137,5 @@ statistics are rooted at *tcp.<stat_prefix>.* with the following statistics:
   downstream_cx_no_route, Counter, Number of connections for which no matching route was found.
   downstream_cx_tx_bytes_total, Counter, Total bytes written to the downstream connection.
   downstream_cx_tx_bytes_buffered, Gauge, Total bytes currently buffered to the downstream connection.
-
+  downstream_flow_control_paused_reading_total, Counter, Total number of times flow control paused reading from downstream.
+  downstream_flow_control_resumed_reading_total, Counter, Total number of times flow control resumed reading from downstream.

@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cstdint>
+#include <iostream>
 #include <list>
 #include <mutex>
 #include <stdexcept>
@@ -11,14 +12,33 @@
 #include <vector>
 
 #include "envoy/buffer/buffer.h"
+#include "envoy/http/codec.h"
 
 #include "common/common/empty_string.h"
+#include "common/config/bootstrap_json.h"
+#include "common/json/json_loader.h"
 #include "common/network/address_impl.h"
+#include "common/network/utility.h"
 
 #include "test/test_common/printers.h"
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
-#include "spdlog/spdlog.h"
+
+using testing::GTEST_FLAG(random_seed);
+
+namespace Envoy {
+
+static const int32_t SEED = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count();
+
+TestRandomGenerator::TestRandomGenerator()
+    : seed_(GTEST_FLAG(random_seed) == 0 ? SEED : GTEST_FLAG(random_seed)), generator_(seed_) {
+  std::cerr << "TestRandomGenerator running with seed " << seed_ << "\n";
+}
+
+uint64_t TestRandomGenerator::random() { return generator_(); }
 
 bool TestUtility::buffersEqual(const Buffer::Instance& lhs, const Buffer::Instance& rhs) {
   if (lhs.length() != rhs.length()) {
@@ -60,11 +80,29 @@ std::string TestUtility::bufferToString(const Buffer::Instance& buffer) {
   return output;
 }
 
+Stats::CounterSharedPtr TestUtility::findCounter(Stats::Store& store, const std::string& name) {
+  for (auto counter : store.counters()) {
+    if (counter->name() == name) {
+      return counter;
+    }
+  }
+  return nullptr;
+}
+
+Stats::GaugeSharedPtr TestUtility::findGauge(Stats::Store& store, const std::string& name) {
+  for (auto gauge : store.gauges()) {
+    if (gauge->name() == name) {
+      return gauge;
+    }
+  }
+  return nullptr;
+}
+
 std::list<Network::Address::InstanceConstSharedPtr>
 TestUtility::makeDnsResponse(const std::list<std::string>& addresses) {
   std::list<Network::Address::InstanceConstSharedPtr> ret;
-  for (auto address : addresses) {
-    ret.emplace_back(new Network::Address::Ipv4Instance(address));
+  for (const auto& address : addresses) {
+    ret.emplace_back(Network::Utility::parseInternetAddress(address));
   }
   return ret;
 }
@@ -95,6 +133,13 @@ std::vector<std::string> TestUtility::listFiles(const std::string& path, bool re
   return file_names;
 }
 
+envoy::api::v2::Bootstrap TestUtility::parseBootstrapFromJson(const std::string& json_string) {
+  envoy::api::v2::Bootstrap bootstrap;
+  auto json_object_ptr = Json::Factory::loadFromString(json_string);
+  Config::BootstrapJson::translateBootstrap(*json_object_ptr, bootstrap);
+  return bootstrap;
+}
+
 void ConditionalInitializer::setReady() {
   std::unique_lock<std::mutex> lock(mutex_);
   EXPECT_FALSE(ready_);
@@ -105,11 +150,13 @@ void ConditionalInitializer::setReady() {
 void ConditionalInitializer::waitReady() {
   std::unique_lock<std::mutex> lock(mutex_);
   if (ready_) {
+    ready_ = false;
     return;
   }
 
   cv_.wait(lock);
   EXPECT_TRUE(ready_);
+  ready_ = false;
 }
 
 ScopedFdCloser::ScopedFdCloser(int fd) : fd_(fd) {}
@@ -117,28 +164,27 @@ ScopedFdCloser::~ScopedFdCloser() { ::close(fd_); }
 
 namespace Http {
 
+// Satisfy linker
+const uint32_t Http2Settings::DEFAULT_HPACK_TABLE_SIZE;
+const uint32_t Http2Settings::DEFAULT_MAX_CONCURRENT_STREAMS;
+const uint32_t Http2Settings::DEFAULT_INITIAL_STREAM_WINDOW_SIZE;
+const uint32_t Http2Settings::DEFAULT_INITIAL_CONNECTION_WINDOW_SIZE;
+const uint32_t Http2Settings::MIN_INITIAL_STREAM_WINDOW_SIZE;
+
 TestHeaderMapImpl::TestHeaderMapImpl() : HeaderMapImpl() {}
 
 TestHeaderMapImpl::TestHeaderMapImpl(
     const std::initializer_list<std::pair<std::string, std::string>>& values)
     : HeaderMapImpl() {
   for (auto& value : values) {
-    addViaCopy(value.first, value.second);
+    addCopy(value.first, value.second);
   }
 }
 
 TestHeaderMapImpl::TestHeaderMapImpl(const HeaderMap& rhs) : HeaderMapImpl(rhs) {}
 
-void TestHeaderMapImpl::addViaCopy(const std::string& key, const std::string& value) {
-  addViaCopy(LowerCaseString(key), value);
-}
-
-void TestHeaderMapImpl::addViaCopy(const LowerCaseString& key, const std::string& value) {
-  HeaderString key_string;
-  key_string.setCopy(key.get().c_str(), key.get().size());
-  HeaderString value_string;
-  value_string.setCopy(value.c_str(), value.size());
-  addViaMove(std::move(key_string), std::move(value_string));
+void TestHeaderMapImpl::addCopy(const std::string& key, const std::string& value) {
+  addCopy(LowerCaseString(key), value);
 }
 
 std::string TestHeaderMapImpl::get_(const std::string& key) { return get_(LowerCaseString(key)); }
@@ -156,4 +202,5 @@ bool TestHeaderMapImpl::has(const std::string& key) { return get(LowerCaseString
 
 bool TestHeaderMapImpl::has(const LowerCaseString& key) { return get(key) != nullptr; }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

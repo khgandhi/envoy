@@ -6,12 +6,31 @@
 
 #include "gtest/gtest.h"
 
-TEST_F(ProxyProtoIntegrationTest, RouterRequestAndResponseWithBodyNoBuffer) {
-  Network::ClientConnectionPtr conn = makeClientConnection(lookupPort("http"));
+namespace Envoy {
 
-  Buffer::OwnedImpl buf("PROXY TCP4 1.2.3.4 255.255.255.255 66776 1234\r\n");
-  conn->write(buf);
+INSTANTIATE_TEST_CASE_P(IpVersions, ProxyProtoIntegrationTest,
+                        testing::ValuesIn(TestEnvironment::getIpVersionsForTest()));
 
-  testRouterRequestAndResponseWithBody(std::move(conn), Http::CodecClient::Type::HTTP1, 1024, 512,
-                                       false);
+TEST_P(ProxyProtoIntegrationTest, RouterRequestAndResponseWithBodyNoBuffer) {
+  ConnectionCreationFunction creator = [&]() -> Network::ClientConnectionPtr {
+    Network::ClientConnectionPtr conn = makeClientConnection(lookupPort("http"));
+    Buffer::OwnedImpl buf("PROXY TCP4 1.2.3.4 254.254.254.254 65535 1234\r\n");
+    conn->write(buf);
+    return conn;
+  };
+
+  testRouterRequestAndResponseWithBody(1024, 512, false, &creator);
 }
+
+TEST_P(ProxyProtoIntegrationTest, RouterRequestAndResponseWithBodyNoBufferV6) {
+  ConnectionCreationFunction creator = [&]() -> Network::ClientConnectionPtr {
+    auto conn = makeClientConnection(lookupPort("http"));
+    Buffer::OwnedImpl buf("PROXY TCP6 1:2:3::4 FE00:: 65535 1234\r\n");
+    conn->write(buf);
+    return conn;
+  };
+
+  testRouterRequestAndResponseWithBody(1024, 512, false, &creator);
+}
+
+} // namespace Envoy

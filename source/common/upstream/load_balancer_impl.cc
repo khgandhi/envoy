@@ -10,6 +10,7 @@
 
 #include "common/common/assert.h"
 
+namespace Envoy {
 namespace Upstream {
 
 static const std::string RuntimeZoneEnabled = "upstream.zone_routing.enabled";
@@ -23,11 +24,19 @@ LoadBalancerBase::LoadBalancerBase(const HostSet& host_set, const HostSet* local
       local_host_set_(local_host_set) {
   if (local_host_set_) {
     host_set_.addMemberUpdateCb(
-        [this](const std::vector<HostSharedPtr>&, const std::vector<HostSharedPtr>&)
-            -> void { regenerateZoneRoutingStructures(); });
-    local_host_set_->addMemberUpdateCb(
-        [this](const std::vector<HostSharedPtr>&, const std::vector<HostSharedPtr>&)
-            -> void { regenerateZoneRoutingStructures(); });
+        [this](const std::vector<HostSharedPtr>&, const std::vector<HostSharedPtr>&) -> void {
+          regenerateZoneRoutingStructures();
+        });
+    local_host_set_member_update_cb_handle_ = local_host_set_->addMemberUpdateCb(
+        [this](const std::vector<HostSharedPtr>&, const std::vector<HostSharedPtr>&) -> void {
+          regenerateZoneRoutingStructures();
+        });
+  }
+}
+
+LoadBalancerBase::~LoadBalancerBase() {
+  if (local_host_set_member_update_cb_handle_ != nullptr) {
+    local_host_set_member_update_cb_handle_->remove();
   }
 }
 
@@ -121,15 +130,15 @@ bool LoadBalancerBase::earlyExitNonZoneRouting() {
   return false;
 }
 
-bool LoadBalancerUtility::isGlobalPanic(const HostSet& host_set, ClusterStats& stats,
-                                        Runtime::Loader& runtime) {
+bool LoadBalancerUtility::isGlobalPanic(const HostSet& host_set, Runtime::Loader& runtime) {
   uint64_t global_panic_threshold =
       std::min<uint64_t>(100, runtime.snapshot().getInteger(RuntimePanicThreshold, 50));
-  double healthy_percent = 100.0 * host_set.healthyHosts().size() / host_set.hosts().size();
+  double healthy_percent = host_set.hosts().size() == 0
+                               ? 0
+                               : 100.0 * host_set.healthyHosts().size() / host_set.hosts().size();
 
   // If the % of healthy hosts in the cluster is less than our panic threshold, we use all hosts.
   if (healthy_percent < global_panic_threshold) {
-    stats.lb_healthy_panic_.inc();
     return true;
   }
 
@@ -200,8 +209,8 @@ const std::vector<HostSharedPtr>& LoadBalancerBase::tryChooseLocalZoneHosts() {
 const std::vector<HostSharedPtr>& LoadBalancerBase::hostsToUse() {
   ASSERT(host_set_.healthyHosts().size() <= host_set_.hosts().size());
 
-  if (host_set_.hosts().empty() ||
-      LoadBalancerUtility::isGlobalPanic(host_set_, stats_, runtime_)) {
+  if (LoadBalancerUtility::isGlobalPanic(host_set_, runtime_)) {
+    stats_.lb_healthy_panic_.inc();
     return host_set_.hosts();
   }
 
@@ -213,8 +222,7 @@ const std::vector<HostSharedPtr>& LoadBalancerBase::hostsToUse() {
     return host_set_.healthyHosts();
   }
 
-  if (local_host_set_->hosts().empty() ||
-      LoadBalancerUtility::isGlobalPanic(*local_host_set_, stats_, runtime_)) {
+  if (LoadBalancerUtility::isGlobalPanic(*local_host_set_, runtime_)) {
     stats_.lb_local_cluster_not_ok_.inc();
     return host_set_.healthyHosts();
   }
@@ -296,4 +304,5 @@ HostConstSharedPtr RandomLoadBalancer::chooseHost(const LoadBalancerContext*) {
   return hosts_to_use[random_.random() % hosts_to_use.size()];
 }
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

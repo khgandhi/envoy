@@ -6,6 +6,7 @@
 
 #include "event2/thread.h"
 
+namespace Envoy {
 namespace Event {
 namespace Libevent {
 
@@ -16,5 +17,6 @@ void Global::initialize() {
   signal(SIGPIPE, SIG_IGN);
 }
 
-} // Libevent
-} // Event
+} // namespace Libevent
+} // namespace Event
+} // namespace Envoy

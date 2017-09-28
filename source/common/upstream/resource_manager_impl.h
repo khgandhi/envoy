@@ -10,6 +10,7 @@
 
 #include "common/common/assert.h"
 
+namespace Envoy {
 namespace Upstream {
 
 /**
@@ -66,4 +67,5 @@ private:
 
 typedef std::unique_ptr<ResourceManagerImpl> ResourceManagerImplPtr;
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

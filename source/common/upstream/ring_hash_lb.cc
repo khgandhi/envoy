@@ -7,6 +7,7 @@
 #include "common/common/assert.h"
 #include "common/upstream/load_balancer_impl.h"
 
+namespace Envoy {
 namespace Upstream {
 
 RingHashLoadBalancer::RingHashLoadBalancer(HostSet& host_set, ClusterStats& stats,
@@ -20,7 +21,8 @@ RingHashLoadBalancer::RingHashLoadBalancer(HostSet& host_set, ClusterStats& stat
 }
 
 HostConstSharedPtr RingHashLoadBalancer::chooseHost(const LoadBalancerContext* context) {
-  if (LoadBalancerUtility::isGlobalPanic(host_set_, stats_, runtime_)) {
+  if (LoadBalancerUtility::isGlobalPanic(host_set_, runtime_)) {
+    stats_.lb_healthy_panic_.inc();
     return all_hosts_ring_.chooseHost(context, random_);
   } else {
     return healthy_hosts_ring_.chooseHost(context, random_);
@@ -35,12 +37,12 @@ HostConstSharedPtr RingHashLoadBalancer::Ring::chooseHost(const LoadBalancerCont
 
   // If there is no hash in the context, just choose a random value (this effectively becomes
   // the random LB but it won't crash if someone configures it this way).
-  uint64_t h;
-  if (!context || !context->hashKey().valid()) {
-    h = random.random();
-  } else {
-    h = context->hashKey().value();
+  // hashKey() may be computed on demand, so get it only once.
+  Optional<uint64_t> hash;
+  if (context) {
+    hash = context->hashKey();
   }
+  const uint64_t h = hash.valid() ? hash.value() : random.random();
 
   // Ported from https://github.com/RJ/ketama/blob/master/libketama/ketama.c (ketama_get_server)
   // I've generally kept the variable names to make the code easier to compare.
@@ -76,7 +78,7 @@ HostConstSharedPtr RingHashLoadBalancer::Ring::chooseHost(const LoadBalancerCont
 
 void RingHashLoadBalancer::Ring::create(Runtime::Loader& runtime,
                                         const std::vector<HostSharedPtr>& hosts) {
-  log_trace("ring hash: building ring");
+  ENVOY_LOG(trace, "ring hash: building ring");
   ring_.clear();
   if (hosts.empty()) {
     return;
@@ -100,22 +102,25 @@ void RingHashLoadBalancer::Ring::create(Runtime::Loader& runtime,
     }
   }
 
-  log_trace("ring hash: min_ring_size={} hashes_per_host={}", min_ring_size, hashes_per_host);
+  ENVOY_LOG(trace, "ring hash: min_ring_size={} hashes_per_host={}", min_ring_size,
+            hashes_per_host);
   ring_.reserve(hosts.size() * hashes_per_host);
-  for (auto host : hosts) {
+  for (const auto& host : hosts) {
     for (uint64_t i = 0; i < hashes_per_host; i++) {
       std::string hash_key(host->address()->asString() + "_" + std::to_string(i));
+      // TODO(danielhochman): convert to HashUtil::xxHash64 when we have a migration strategy.
       uint64_t hash = std::hash<std::string>()(hash_key);
-      log_trace("ring hash: hash_key={} hash={}", hash_key, hash);
+      ENVOY_LOG(trace, "ring hash: hash_key={} hash={}", hash_key, hash);
       ring_.push_back({hash, host});
     }
   }
 
-  std::sort(ring_.begin(), ring_.end(), [](const RingEntry& lhs, const RingEntry& rhs)
-                                            -> bool { return lhs.hash_ < rhs.hash_; });
-#ifndef NDEBUG
+  std::sort(ring_.begin(), ring_.end(), [](const RingEntry& lhs, const RingEntry& rhs) -> bool {
+    return lhs.hash_ < rhs.hash_;
+  });
+#ifndef NVLOG
   for (auto entry : ring_) {
-    log_trace("ring hash: host={} hash={}", entry.host_->address()->asString(), entry.hash_);
+    ENVOY_LOG(trace, "ring hash: host={} hash={}", entry.host_->address()->asString(), entry.hash_);
   }
 #endif
 }
@@ -125,4 +130,5 @@ void RingHashLoadBalancer::refresh() {
   healthy_hosts_ring_.create(runtime_, host_set_.healthyHosts());
 }
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

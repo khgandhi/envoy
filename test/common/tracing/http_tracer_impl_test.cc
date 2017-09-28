@@ -9,7 +9,6 @@
 #include "common/runtime/runtime_impl.h"
 #include "common/runtime/uuid_util.h"
 #include "common/tracing/http_tracer_impl.h"
-#include "common/tracing/lightstep_tracer_impl.h"
 
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/local_info/mocks.h"
@@ -24,13 +23,14 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
 using testing::Test;
+using testing::_;
 
+namespace Envoy {
 namespace Tracing {
 
 TEST(HttpTracerUtilityTest, mutateHeaders) {
@@ -234,13 +234,16 @@ TEST(HttpTracerUtilityTest, IsTracing) {
   }
 }
 
-TEST(HttpTracerUtilityTest, OriginalAndLongPath) {
+TEST(HttpConnManFinalizerImpl, OriginalAndLongPath) {
   const std::string path(300, 'a');
+  const std::string path_prefix = "http://";
   const std::string expected_path(128, 'a');
   std::unique_ptr<NiceMock<MockSpan>> span(new NiceMock<MockSpan>());
 
-  Http::TestHeaderMapImpl request_headers{
-      {"x-request-id", "id"}, {"x-envoy-original-path", path}, {":method", "GET"}};
+  Http::TestHeaderMapImpl request_headers{{"x-request-id", "id"},
+                                          {"x-envoy-original-path", path},
+                                          {":method", "GET"},
+                                          {"x-forwarded-proto", "http"}};
   NiceMock<Http::AccessLog::MockRequestInfo> request_info;
 
   Http::Protocol protocol = Http::Protocol::Http2;
@@ -251,16 +254,67 @@ TEST(HttpTracerUtilityTest, OriginalAndLongPath) {
   EXPECT_CALL(request_info, responseCode()).WillRepeatedly(ReturnRef(response_code));
 
   EXPECT_CALL(*span, setTag(_, _)).Times(testing::AnyNumber());
-  EXPECT_CALL(*span, setTag("request_line", "GET " + expected_path + " HTTP/2"));
+  EXPECT_CALL(*span, setTag("http.url", path_prefix + expected_path));
+  EXPECT_CALL(*span, setTag("http.method", "GET"));
+  EXPECT_CALL(*span, setTag("http.protocol", "HTTP/2"));
   NiceMock<MockConfig> config;
-  HttpTracerUtility::finalizeSpan(*span, request_headers, request_info, config);
+
+  HttpConnManFinalizerImpl finalizer(&request_headers, request_info, config);
+  finalizer.finalize(*span);
 }
 
-TEST(HttpTracerUtilityTest, SpanOptionalHeaders) {
+TEST(HttpConnManFinalizerImpl, NullRequestHeaders) {
+  std::unique_ptr<NiceMock<MockSpan>> span(new NiceMock<MockSpan>());
+  NiceMock<Http::AccessLog::MockRequestInfo> request_info;
+
+  EXPECT_CALL(request_info, bytesReceived()).WillOnce(Return(10));
+  EXPECT_CALL(request_info, bytesSent()).WillOnce(Return(11));
+  Optional<uint32_t> response_code;
+  EXPECT_CALL(request_info, responseCode()).WillRepeatedly(ReturnRef(response_code));
+  EXPECT_CALL(request_info, upstreamHost()).WillOnce(Return(nullptr));
+
+  EXPECT_CALL(*span, setTag("http.status_code", "0"));
+  EXPECT_CALL(*span, setTag("error", "true"));
+  EXPECT_CALL(*span, setTag("response_size", "11"));
+  EXPECT_CALL(*span, setTag("response_flags", "-"));
+  EXPECT_CALL(*span, setTag("request_size", "10"));
+  EXPECT_CALL(*span, setTag("upstream_cluster", _)).Times(0);
+  NiceMock<MockConfig> config;
+
+  HttpConnManFinalizerImpl finalizer(nullptr, request_info, config);
+  finalizer.finalize(*span);
+}
+
+TEST(HttpConnManFinalizerImpl, UpstreamClusterTagSet) {
+  std::unique_ptr<NiceMock<MockSpan>> span(new NiceMock<MockSpan>());
+  NiceMock<Http::AccessLog::MockRequestInfo> request_info;
+  request_info.host_->cluster_.name_ = "my_upstream_cluster";
+
+  EXPECT_CALL(request_info, bytesReceived()).WillOnce(Return(10));
+  EXPECT_CALL(request_info, bytesSent()).WillOnce(Return(11));
+  Optional<uint32_t> response_code;
+  EXPECT_CALL(request_info, responseCode()).WillRepeatedly(ReturnRef(response_code));
+  EXPECT_CALL(request_info, upstreamHost()).Times(2);
+
+  EXPECT_CALL(*span, setTag("upstream_cluster", "my_upstream_cluster"));
+  EXPECT_CALL(*span, setTag("http.status_code", "0"));
+  EXPECT_CALL(*span, setTag("error", "true"));
+  EXPECT_CALL(*span, setTag("response_size", "11"));
+  EXPECT_CALL(*span, setTag("response_flags", "-"));
+  EXPECT_CALL(*span, setTag("request_size", "10"));
+  NiceMock<MockConfig> config;
+
+  HttpConnManFinalizerImpl finalizer(nullptr, request_info, config);
+  finalizer.finalize(*span);
+}
+
+TEST(HttpConnManFinalizerImpl, SpanOptionalHeaders) {
   std::unique_ptr<NiceMock<MockSpan>> span(new NiceMock<MockSpan>());
 
-  Http::TestHeaderMapImpl request_headers{
-      {"x-request-id", "id"}, {":path", "/test"}, {":method", "GET"}};
+  Http::TestHeaderMapImpl request_headers{{"x-request-id", "id"},
+                                          {":path", "/test"},
+                                          {":method", "GET"},
+                                          {"x-forwarded-proto", "https"}};
   NiceMock<Http::AccessLog::MockRequestInfo> request_info;
 
   Http::Protocol protocol = Http::Protocol::Http10;
@@ -270,54 +324,62 @@ TEST(HttpTracerUtilityTest, SpanOptionalHeaders) {
 
   // Check that span is populated correctly.
   EXPECT_CALL(*span, setTag("guid:x-request-id", "id"));
-  EXPECT_CALL(*span, setTag("request_line", "GET /test HTTP/1.0"));
-  EXPECT_CALL(*span, setTag("host_header", "-"));
+  EXPECT_CALL(*span, setTag("http.url", "https:///test"));
+  EXPECT_CALL(*span, setTag("http.method", "GET"));
   EXPECT_CALL(*span, setTag("user_agent", "-"));
+  EXPECT_CALL(*span, setTag("http.protocol", "HTTP/1.0"));
   EXPECT_CALL(*span, setTag("downstream_cluster", "-"));
   EXPECT_CALL(*span, setTag("request_size", "10"));
 
   Optional<uint32_t> response_code;
   EXPECT_CALL(request_info, responseCode()).WillRepeatedly(ReturnRef(response_code));
   EXPECT_CALL(request_info, bytesSent()).WillOnce(Return(100));
+  EXPECT_CALL(request_info, upstreamHost()).WillOnce(Return(nullptr));
 
-  EXPECT_CALL(*span, setTag("response_code", "0"));
+  EXPECT_CALL(*span, setTag("http.status_code", "0"));
+  EXPECT_CALL(*span, setTag("error", "true"));
   EXPECT_CALL(*span, setTag("response_size", "100"));
   EXPECT_CALL(*span, setTag("response_flags", "-"));
+  EXPECT_CALL(*span, setTag("upstream_cluster", _)).Times(0);
 
-  EXPECT_CALL(*span, finishSpan());
   NiceMock<MockConfig> config;
-  HttpTracerUtility::finalizeSpan(*span, request_headers, request_info, config);
+
+  HttpConnManFinalizerImpl finalizer(&request_headers, request_info, config);
+  finalizer.finalize(*span);
 }
 
-TEST(HttpTracerUtilityTest, SpanPopulatedFailureResponse) {
+TEST(HttpConnManFinalizerImpl, SpanPopulatedFailureResponse) {
   std::unique_ptr<NiceMock<MockSpan>> span(new NiceMock<MockSpan>());
-  Http::TestHeaderMapImpl request_headers{
-      {"x-request-id", "id"}, {":path", "/test"}, {":method", "GET"}};
+  Http::TestHeaderMapImpl request_headers{{"x-request-id", "id"},
+                                          {":path", "/test"},
+                                          {":method", "GET"},
+                                          {"x-forwarded-proto", "http"}};
   NiceMock<Http::AccessLog::MockRequestInfo> request_info;
-  Http::Protocol protocol = Http::Protocol::Http10;
-  EXPECT_CALL(request_info, protocol()).WillOnce(Return(protocol));
 
   request_headers.insertHost().value(std::string("api"));
   request_headers.insertUserAgent().value(std::string("agent"));
   request_headers.insertEnvoyDownstreamServiceCluster().value(std::string("downstream_cluster"));
   request_headers.insertClientTraceId().value(std::string("client_trace_id"));
 
+  Http::Protocol protocol = Http::Protocol::Http10;
+  EXPECT_CALL(request_info, protocol()).WillOnce(Return(protocol));
   EXPECT_CALL(request_info, bytesReceived()).WillOnce(Return(10));
   const std::string service_node = "i-453";
 
   // Check that span is populated correctly.
   EXPECT_CALL(*span, setTag("guid:x-request-id", "id"));
-  EXPECT_CALL(*span, setTag("request_line", "GET /test HTTP/1.0"));
-  EXPECT_CALL(*span, setTag("host_header", "api"));
+  EXPECT_CALL(*span, setTag("http.url", "http://api/test"));
+  EXPECT_CALL(*span, setTag("http.method", "GET"));
   EXPECT_CALL(*span, setTag("user_agent", "agent"));
+  EXPECT_CALL(*span, setTag("http.protocol", "HTTP/1.0"));
   EXPECT_CALL(*span, setTag("downstream_cluster", "downstream_cluster"));
   EXPECT_CALL(*span, setTag("request_size", "10"));
   EXPECT_CALL(*span, setTag("guid:x-client-trace-id", "client_trace_id"));
 
   // Check that span has tags from custom headers.
-  request_headers.addViaCopy(Http::LowerCaseString("aa"), "a");
-  request_headers.addViaCopy(Http::LowerCaseString("bb"), "b");
-  request_headers.addViaCopy(Http::LowerCaseString("cc"), "c");
+  request_headers.addCopy(Http::LowerCaseString("aa"), "a");
+  request_headers.addCopy(Http::LowerCaseString("bb"), "b");
+  request_headers.addCopy(Http::LowerCaseString("cc"), "c");
   MockConfig config;
   config.headers_.push_back(Http::LowerCaseString("aa"));
   config.headers_.push_back(Http::LowerCaseString("cc"));
@@ -331,14 +393,16 @@ TEST(HttpTracerUtilityTest, SpanPopulatedFailureResponse) {
   EXPECT_CALL(request_info, bytesSent()).WillOnce(Return(100));
   ON_CALL(request_info, getResponseFlag(Http::AccessLog::ResponseFlag::UpstreamRequestTimeout))
       .WillByDefault(Return(true));
+  EXPECT_CALL(request_info, upstreamHost()).WillOnce(Return(nullptr));
 
   EXPECT_CALL(*span, setTag("error", "true"));
-  EXPECT_CALL(*span, setTag("response_code", "503"));
+  EXPECT_CALL(*span, setTag("http.status_code", "503"));
   EXPECT_CALL(*span, setTag("response_size", "100"));
   EXPECT_CALL(*span, setTag("response_flags", "UT"));
+  EXPECT_CALL(*span, setTag("upstream_cluster", _)).Times(0);
 
-  EXPECT_CALL(*span, finishSpan());
-  HttpTracerUtility::finalizeSpan(*span, request_headers, request_info, config);
+  HttpConnManFinalizerImpl finalizer(&request_headers, request_info, config);
+  finalizer.finalize(*span);
 }
 
 TEST(HttpTracerUtilityTest, operationTypeToString) {
@@ -352,7 +416,12 @@ TEST(HttpNullTracerTest, BasicFunctionality) {
   Http::AccessLog::MockRequestInfo request_info;
   Http::TestHeaderMapImpl request_headers;
 
-  EXPECT_EQ(nullptr, null_tracer.startSpan(config, request_headers, request_info));
+  SpanPtr span_ptr = null_tracer.startSpan(config, request_headers, request_info);
+  EXPECT_TRUE(dynamic_cast<NullSpan*>(span_ptr.get()) != nullptr);
+
+  span_ptr->setTag("foo", "bar");
+  span_ptr->injectContext(request_headers);
+  EXPECT_NE(nullptr, span_ptr->spawnChild(config, "foo", std::chrono::system_clock::now()));
 }
 
 class HttpTracerImplTest : public Test {
@@ -376,9 +445,8 @@ TEST_F(HttpTracerImplTest, BasicFunctionalityNullSpan) {
   EXPECT_CALL(config_, operationName()).Times(2);
   EXPECT_CALL(request_info_, startTime());
   const std::string operation_name = "ingress";
-  EXPECT_CALL(*driver_, startSpan_(_, operation_name, request_info_.start_time_))
+  EXPECT_CALL(*driver_, startSpan_(_, _, operation_name, request_info_.start_time_))
       .WillOnce(Return(nullptr));
-
   tracer_->startSpan(config_, request_headers_, request_info_);
 }
 
@@ -389,13 +457,13 @@ TEST_F(HttpTracerImplTest, BasicFunctionalityNodeSet) {
 
   NiceMock<MockSpan>* span = new NiceMock<MockSpan>();
   const std::string operation_name = "egress test";
-  EXPECT_CALL(*driver_, startSpan_(_, operation_name, request_info_.start_time_))
+  EXPECT_CALL(*driver_, startSpan_(_, _, operation_name, request_info_.start_time_))
       .WillOnce(Return(span));
-
   EXPECT_CALL(*span, setTag(_, _)).Times(testing::AnyNumber());
   EXPECT_CALL(*span, setTag("node_id", "node_name"));
 
   tracer_->startSpan(config_, request_headers_, request_info_);
 }
 
-} // Tracing
+} // namespace Tracing
+} // namespace Envoy

@@ -8,6 +8,7 @@
 #include "common/http/message_impl.h"
 #include "common/http/utility.h"
 
+namespace Envoy {
 namespace Http {
 
 RestApiFetcher::RestApiFetcher(Upstream::ClusterManager& cm, const std::string& remote_cluster_name,
@@ -66,4 +67,5 @@ void RestApiFetcher::requestComplete() {
   refresh_timer_->enableTimer(final_delay);
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

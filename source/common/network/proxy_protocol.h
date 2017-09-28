@@ -9,6 +9,7 @@
 
 #include "common/common/linked_object.h"
 
+namespace Envoy {
 namespace Network {
 
 class ListenerImpl;
@@ -41,8 +42,7 @@ public:
     ~ActiveConnection();
 
   private:
-    static const size_t MAX_PROXY_PROTO_LEN = 56;
-    static const std::string PROXY_TCP4;
+    static const size_t MAX_PROXY_PROTO_LEN = 108;
 
     void onRead();
     void onReadWorker();
@@ -79,4 +79,5 @@ private:
   std::list<std::unique_ptr<ActiveConnection>> connections_;
 };
 
-} // Network
+} // namespace Network
+} // namespace Envoy

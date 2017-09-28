@@ -4,12 +4,14 @@
 #include <string>
 
 #include "common/common/assert.h"
+#include "common/config/utility.h"
 #include "common/json/config_schemas.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
 // TODO(mattklein123): Graceful drain support.
 
+namespace Envoy {
 namespace Redis {
 
 ProxyFilterConfig::ProxyFilterConfig(const Json::Object& config, Upstream::ClusterManager& cm,
@@ -18,10 +20,7 @@ ProxyFilterConfig::ProxyFilterConfig(const Json::Object& config, Upstream::Clust
       cluster_name_(config.getString("cluster_name")),
       stat_prefix_(fmt::format("redis.{}.", config.getString("stat_prefix"))),
       stats_(generateStats(stat_prefix_, scope)) {
-  if (!cm.get(cluster_name_)) {
-    throw EnvoyException(
-        fmt::format("redis filter config: unknown cluster name '{}'", cluster_name_));
-  }
+  Config::Utility::checkCluster("redis", cluster_name_, cm);
 }
 
 ProxyStats ProxyFilterConfig::generateStats(const std::string& prefix, Stats::Scope& scope) {
@@ -45,10 +44,11 @@ ProxyFilter::~ProxyFilter() {
 void ProxyFilter::initializeReadFilterCallbacks(Network::ReadFilterCallbacks& callbacks) {
   callbacks_ = &callbacks;
   callbacks_->connection().addConnectionCallbacks(*this);
-  callbacks_->connection().setBufferStats({config_->stats().downstream_cx_rx_bytes_total_,
-                                           config_->stats().downstream_cx_rx_bytes_buffered_,
-                                           config_->stats().downstream_cx_tx_bytes_total_,
-                                           config_->stats().downstream_cx_tx_bytes_buffered_});
+  callbacks_->connection().setConnectionStats({config_->stats().downstream_cx_rx_bytes_total_,
+                                               config_->stats().downstream_cx_rx_bytes_buffered_,
+                                               config_->stats().downstream_cx_tx_bytes_total_,
+                                               config_->stats().downstream_cx_tx_bytes_buffered_,
+                                               nullptr});
 }
 
 void ProxyFilter::onRespValue(RespValuePtr&& value) {
@@ -62,11 +62,13 @@ void ProxyFilter::onRespValue(RespValuePtr&& value) {
   }
 }
 
-void ProxyFilter::onEvent(uint32_t events) {
-  if (events & Network::ConnectionEvent::RemoteClose ||
-      events & Network::ConnectionEvent::LocalClose) {
+void ProxyFilter::onEvent(Network::ConnectionEvent event) {
+  if (event == Network::ConnectionEvent::RemoteClose ||
+      event == Network::ConnectionEvent::LocalClose) {
     while (!pending_requests_.empty()) {
-      pending_requests_.front().request_handle_->cancel();
+      if (pending_requests_.front().request_handle_ != nullptr) {
+        pending_requests_.front().request_handle_->cancel();
+      }
       pending_requests_.pop_front();
     }
   }
@@ -114,4 +116,5 @@ ProxyFilter::PendingRequest::~PendingRequest() {
   parent_.config_->stats().downstream_rq_active_.dec();
 }
 
-} // Redis
+} // namespace Redis
+} // namespace Envoy

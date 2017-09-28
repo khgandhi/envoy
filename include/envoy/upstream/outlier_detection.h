@@ -9,6 +9,7 @@
 #include "envoy/common/pure.h"
 #include "envoy/common/time.h"
 
+namespace Envoy {
 namespace Upstream {
 
 class Host;
@@ -20,11 +21,11 @@ typedef std::shared_ptr<const HostDescription> HostDescriptionConstSharedPtr;
 namespace Outlier {
 
 /**
- * Sink for per host data. Proxy filters should send pertinent data when available.
+ * Monitor for per host data. Proxy filters should send pertinent data when available.
  */
-class DetectorHostSink {
+class DetectorHostMonitor {
 public:
-  virtual ~DetectorHostSink() {}
+  virtual ~DetectorHostMonitor() {}
 
   /**
    * @return the number of times this host has been ejected.
@@ -62,7 +63,7 @@ public:
   virtual double successRate() const PURE;
 };
 
-typedef std::unique_ptr<DetectorHostSink> DetectorHostSinkPtr;
+typedef std::unique_ptr<DetectorHostMonitor> DetectorHostMonitorPtr;
 
 /**
  * Interface for an outlier detection engine. Uses per host data to determine which hosts in a
@@ -130,5 +131,6 @@ public:
 
 typedef std::shared_ptr<EventLogger> EventLoggerSharedPtr;
 
-} // Outlier
-} // Upstream
+} // namespace Outlier
+} // namespace Upstream
+} // namespace Envoy

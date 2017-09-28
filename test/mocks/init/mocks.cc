@@ -5,9 +5,10 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Invoke;
+using testing::_;
 
+namespace Envoy {
 namespace Init {
 
 MockTarget::MockTarget() {
@@ -21,10 +22,12 @@ MockTarget::MockTarget() {
 MockTarget::~MockTarget() {}
 
 MockManager::MockManager() {
-  ON_CALL(*this, registerTarget(_))
-      .WillByDefault(Invoke([this](Target& target) -> void { targets_.push_back(&target); }));
+  ON_CALL(*this, registerTarget(_)).WillByDefault(Invoke([this](Target& target) -> void {
+    targets_.push_back(&target);
+  }));
 }
 
 MockManager::~MockManager() {}
 
-} // Init
+} // namespace Init
+} // namespace Envoy

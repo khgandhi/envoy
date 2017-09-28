@@ -7,6 +7,7 @@
 
 #include "common/common/linked_object.h"
 
+namespace Envoy {
 namespace Network {
 
 /**
@@ -73,4 +74,5 @@ private:
   std::list<WriteFilterSharedPtr> downstream_filters_;
 };
 
-} // Network
+} // namespace Network
+} // namespace Envoy

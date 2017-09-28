@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "envoy/event/file_event.h"
 #include "envoy/event/signal.h"
@@ -16,6 +18,7 @@
 #include "envoy/ssl/context.h"
 #include "envoy/stats/stats.h"
 
+namespace Envoy {
 namespace Event {
 
 /**
@@ -38,27 +41,34 @@ public:
   /**
    * Create a client connection.
    * @param address supplies the address to connect to.
+   * @param source_address supplies an address to bind to or nullptr if no bind is necessary.
    * @return Network::ClientConnectionPtr a client connection that is owned by the caller.
    */
   virtual Network::ClientConnectionPtr
-  createClientConnection(Network::Address::InstanceConstSharedPtr address) PURE;
+  createClientConnection(Network::Address::InstanceConstSharedPtr address,
+                         Network::Address::InstanceConstSharedPtr source_address) PURE;
 
   /**
    * Create an SSL client connection.
    * @param ssl_ctx supplies the SSL context to use.
    * @param address supplies the address to connect to.
+   * @param source_address supplies an address to bind to or nullptr if no bind is necessary.
    * @return Network::ClientConnectionPtr a client connection that is owned by the caller.
    */
   virtual Network::ClientConnectionPtr
   createSslClientConnection(Ssl::ClientContext& ssl_ctx,
-                            Network::Address::InstanceConstSharedPtr address) PURE;
+                            Network::Address::InstanceConstSharedPtr address,
+                            Network::Address::InstanceConstSharedPtr source_address) PURE;
 
   /**
-   * Create an async DNS resolver. Only a single resolver can exist in the process at a time and it
-   * should only be used on the thread that runs this dispatcher.
-   * @return Network::DnsResolverPtr that is owned by the caller.
+   * Create an async DNS resolver. The resolver should only be used on the thread that runs this
+   * dispatcher.
+   * @param resolvers supplies the addresses of DNS resolvers that this resolver should use. If left
+   * empty, it will not use any specific resolvers, but use defaults (/etc/resolv.conf)
+   * @return Network::DnsResolverSharedPtr that is owned by the caller.
    */
-  virtual Network::DnsResolverPtr createDnsResolver() PURE;
+  virtual Network::DnsResolverSharedPtr
+  createDnsResolver(const std::vector<Network::Address::InstanceConstSharedPtr>& resolvers) PURE;
 
   /**
    * Create a file event that will signal when a file is readable or writable. On UNIX systems this
@@ -147,8 +157,15 @@ public:
    */
   enum class RunType { Block, NonBlock };
   virtual void run(RunType type) PURE;
+
+  /**
+   * Returns a factory which connections may use for watermark buffer creation.
+   * @return the watermark buffer factory for this dispatcher.
+   */
+  virtual Buffer::WatermarkFactory& getWatermarkFactory() PURE;
 };
 
 typedef std::unique_ptr<Dispatcher> DispatcherPtr;
 
-} // Event
+} // namespace Event
+} // namespace Envoy

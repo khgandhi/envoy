@@ -6,40 +6,84 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
 
 #include "envoy/http/filter.h"
 #include "envoy/network/filter.h"
 #include "envoy/server/configuration.h"
+#include "envoy/server/filter_config.h"
 #include "envoy/server/instance.h"
+#include "envoy/tracing/http_tracer.h"
 
 #include "common/common/logger.h"
 #include "common/json/json_loader.h"
 #include "common/network/utility.h"
 
+#include "server/lds_api.h"
+
+#include "api/bootstrap.pb.h"
+
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
-enum class NetworkFilterType { Read, Write, Both };
-
 /**
- * This lambda is used to wrap the creation of a network filter chain for new connections as they
- * come in. Filter factories create the lambda at configuration initialization time, and then they
- * are used at runtime. This maps JSON -> runtime configuration.
+ * Implemented by each HttpTracer and registered via Registry::registerFactory() or
+ * the convenience class RegisterFactory.
  */
-typedef std::function<void(Network::FilterManager& filter_manager)> NetworkFilterFactoryCb;
-
-/**
- * Implemented by each network filter and registered via registerNetworkFilterConfigFactory() or
- * the convenience class RegisterNetworkFilterConfigFactory.
- */
-class NetworkFilterConfigFactory {
+class HttpTracerFactory {
 public:
-  virtual ~NetworkFilterConfigFactory() {}
+  virtual ~HttpTracerFactory() {}
 
-  virtual NetworkFilterFactoryCb tryCreateFilterFactory(NetworkFilterType type,
-                                                        const std::string& name,
-                                                        const Json::Object& config,
-                                                        Server::Instance& server) PURE;
+  /**
+   * Create a particular HttpTracer implementation.  If the implementation is unable to produce an
+   * HttpTracer with the provided parameters, it should throw an EnvoyException in the case of
+   * general error or a Json::Exception if the json configuration is erroneous.  The returned
+   * pointer should always be valid.
+   * @param json_config supplies the general json configuration for the HttpTracer
+   * @param server supplies the server instance
+   * @param cluster_manager supplies the cluster_manager instance
+   */
+  virtual Tracing::HttpTracerPtr createHttpTracer(const Json::Object& json_config, Instance& server,
+                                                  Upstream::ClusterManager& cluster_manager) PURE;
+
+  /**
+   * Returns the identifying name for a particular implementation of HttpTracer produced by the
+   * factory.
+   */
+  virtual std::string name() PURE;
+};
+
+/**
+ * Implemented for each Stats::Sink and registered via Registry::registerFactory() or
+ * the convenience class RegisterFactory.
+ */
+class StatsSinkFactory {
+public:
+  virtual ~StatsSinkFactory() {}
+
+  /**
+   * Create a particular Stats::Sink implementation. If the implementation is unable to produce a
+   * Stats::Sink with the provided parameters, it should throw an EnvoyException. The returned
+   * pointer should always be valid.
+   * @param config supplies the custom proto configuration for the Stats::Sink
+   * @param server supplies the server instance
+   */
+  virtual Stats::SinkPtr createStatsSink(const Protobuf::Message& config, Instance& server) PURE;
+
+  /**
+   * @return ProtobufTypes::MessagePtr create empty config proto message for v2. The filter
+   *         config, which arrives in an opaque google.protobuf.Struct message, will be converted to
+   *         JSON and then parsed into this empty proto.
+   */
+  virtual ProtobufTypes::MessagePtr createEmptyConfigProto() PURE;
+
+  /**
+   * Returns the identifying name for a particular implementation of Stats::Sink produced by the
+   * factory.
+   */
+  virtual std::string name() PURE;
 };
 
 /**
@@ -52,7 +96,7 @@ public:
    * exit early if any filters immediately close the connection.
    */
   static bool buildFilterChain(Network::FilterManager& filter_manager,
-                               const std::list<NetworkFilterFactoryCb>& factories);
+                               const std::vector<NetworkFilterFactoryCb>& factories);
 };
 
 /**
@@ -60,26 +104,22 @@ public:
  */
 class MainImpl : Logger::Loggable<Logger::Id::config>, public Main {
 public:
-  MainImpl(Server::Instance& server);
-
-  static void registerNetworkFilterConfigFactory(NetworkFilterConfigFactory& factory) {
-    filterConfigFactories().push_back(&factory);
-  }
-
   /**
    * Initialize the configuration. This happens here vs. the constructor because the initialization
-   * will call through the server to get the cluster manager so the server variable must be
-   * initialized.
+   * will call through the server into the config to get the cluster manager so the config object
+   * must be created already.
+   * @param bootstrap v2 bootstrap proto.
+   * @param server supplies the owning server.
+   * @param cluster_manager_factory supplies the cluster manager creation factory.
    */
-  void initialize(const Json::Object& json);
+  void initialize(const envoy::api::v2::Bootstrap& bootstrap, Instance& server,
+                  Upstream::ClusterManagerFactory& cluster_manager_factory);
 
   // Server::Configuration::Main
   Upstream::ClusterManager& clusterManager() override { return *cluster_manager_; }
   Tracing::HttpTracer& httpTracer() override { return *http_tracer_; }
-  const std::list<ListenerPtr>& listeners() override;
   RateLimit::ClientFactory& rateLimitClientFactory() override { return *ratelimit_client_factory_; }
-  Optional<std::string> statsdTcpClusterName() override { return statsd_tcp_cluster_name_; }
-  Optional<uint32_t> statsdUdpPort() override { return statsd_udp_port_; }
+  std::list<Stats::SinkPtr>& statsSinks() override { return stats_sinks_; }
   std::chrono::milliseconds statsFlushInterval() override { return stats_flush_interval_; }
   std::chrono::milliseconds wdMissTimeout() const override { return watchdog_miss_timeout_; }
   std::chrono::milliseconds wdMegaMissTimeout() const override {
@@ -94,53 +134,14 @@ private:
   /**
    * Initialize tracers and corresponding sinks.
    */
-  void initializeTracers(const Json::Object& tracing_configuration);
+  void initializeTracers(const envoy::api::v2::Tracing& configuration, Instance& server);
 
-  /**
-   * Maps JSON config to runtime config for a listener with network filter chain.
-   */
-  class ListenerConfig : public Server::Configuration::Listener,
-                         public Network::FilterChainFactory {
-  public:
-    ListenerConfig(MainImpl& parent, Json::Object& json);
+  void initializeStatsSinks(const envoy::api::v2::Bootstrap& bootstrap, Instance& server);
 
-    // Server::Configuration::Listener
-    Network::FilterChainFactory& filterChainFactory() override { return *this; }
-    Network::Address::InstanceConstSharedPtr address() override { return address_; }
-    bool bindToPort() override { return bind_to_port_; }
-    Ssl::ServerContext* sslContext() override { return ssl_context_.get(); }
-    bool useProxyProto() override { return use_proxy_proto_; }
-    bool useOriginalDst() override { return use_original_dst_; }
-    uint32_t perConnectionBufferLimitBytes() override { return per_connection_buffer_limit_bytes_; }
-    Stats::Scope& scope() override { return *scope_; }
-
-    // Network::FilterChainFactory
-    bool createFilterChain(Network::Connection& connection) override;
-
-  private:
-    MainImpl& parent_;
-    Network::Address::InstanceConstSharedPtr address_;
-    bool bind_to_port_{};
-    Stats::ScopePtr scope_;
-    Ssl::ServerContextPtr ssl_context_;
-    bool use_proxy_proto_{};
-    bool use_original_dst_{};
-    uint32_t per_connection_buffer_limit_bytes_{};
-    std::list<NetworkFilterFactoryCb> filter_factories_;
-  };
-
-  static std::list<NetworkFilterConfigFactory*>& filterConfigFactories() {
-    static std::list<NetworkFilterConfigFactory*> filter_config_factories;
-    return filter_config_factories;
-  }
-
-  Server::Instance& server_;
-  std::unique_ptr<Upstream::ClusterManagerFactory> cluster_manager_factory_;
   std::unique_ptr<Upstream::ClusterManager> cluster_manager_;
+  std::unique_ptr<LdsApi> lds_api_;
   Tracing::HttpTracerPtr http_tracer_;
-  std::list<Server::Configuration::ListenerPtr> listeners_;
-  Optional<std::string> statsd_tcp_cluster_name_;
-  Optional<uint32_t> statsd_udp_port_;
+  std::list<Stats::SinkPtr> stats_sinks_;
   RateLimit::ClientFactoryPtr ratelimit_client_factory_;
   std::chrono::milliseconds stats_flush_interval_;
   std::chrono::milliseconds watchdog_miss_timeout_;
@@ -150,22 +151,11 @@ private:
 };
 
 /**
- * @see NetworkFilterConfigFactory.
- */
-template <class T> class RegisterNetworkFilterConfigFactory {
-public:
-  RegisterNetworkFilterConfigFactory() {
-    static T instance;
-    MainImpl::registerNetworkFilterConfigFactory(instance);
-  }
-};
-
-/**
  * Initial configuration that reads from JSON.
  */
 class InitialImpl : public Initial {
 public:
-  InitialImpl(const Json::Object& json);
+  InitialImpl(const envoy::api::v2::Bootstrap& bootstrap);
 
   // Server::Configuration::Initial
   Admin& admin() override { return admin_; }
@@ -200,5 +190,6 @@ private:
   std::unique_ptr<RuntimeImpl> runtime_;
 };
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

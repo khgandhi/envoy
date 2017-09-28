@@ -8,8 +8,11 @@
 
 #include "common/http/utility.h"
 
+namespace Envoy {
 namespace Http {
 
+const std::list<std::string> AsyncStreamImpl::NullCorsPolicy::allow_origin_;
+const Optional<bool> AsyncStreamImpl::NullCorsPolicy::allow_credentials_;
 const std::vector<std::reference_wrapper<const Router::RateLimitPolicyEntry>>
     AsyncStreamImpl::NullRateLimitPolicy::rate_limit_policy_entry_;
 const AsyncStreamImpl::NullRateLimitPolicy AsyncStreamImpl::RouteEntryImpl::rate_limit_policy_;
@@ -39,6 +42,7 @@ AsyncClient::Request* AsyncClientImpl::send(MessagePtr&& request, AsyncClient::C
                                             const Optional<std::chrono::milliseconds>& timeout) {
   AsyncRequestImpl* async_request =
       new AsyncRequestImpl(std::move(request), *this, callbacks, timeout);
+  async_request->initialize();
   std::unique_ptr<AsyncStreamImpl> new_request{async_request};
 
   // The request may get immediately failed. If so, we will return nullptr.
@@ -68,41 +72,45 @@ AsyncStreamImpl::AsyncStreamImpl(AsyncClientImpl& parent, AsyncClient::StreamCal
   // TODO(mattklein123): Correctly set protocol in request info when we support access logging.
 }
 
-AsyncStreamImpl::~AsyncStreamImpl() { ASSERT(!reset_callback_); }
-
 void AsyncStreamImpl::encodeHeaders(HeaderMapPtr&& headers, bool end_stream) {
-#ifndef NDEBUG
-  log_debug("async http request response headers (end_stream={}):", end_stream);
-  headers->iterate([](const HeaderEntry& header, void*) -> void {
-    log_debug("  '{}':'{}'", header.key().c_str(), header.value().c_str());
-  }, nullptr);
+#ifndef NVLOG
+  ENVOY_LOG(debug, "async http request response headers (end_stream={}):", end_stream);
+  headers->iterate(
+      [](const HeaderEntry& header, void*) -> void {
+        ENVOY_LOG(debug, "  '{}':'{}'", header.key().c_str(), header.value().c_str());
+      },
+      nullptr);
 #endif
-
+  ASSERT(!remote_closed_);
   stream_callbacks_.onHeaders(std::move(headers), end_stream);
   closeRemote(end_stream);
 }
 
 void AsyncStreamImpl::encodeData(Buffer::Instance& data, bool end_stream) {
-  log_trace("async http request response data (length={} end_stream={})", data.length(),
+  ENVOY_LOG(trace, "async http request response data (length={} end_stream={})", data.length(),
             end_stream);
+  ASSERT(!remote_closed_);
   stream_callbacks_.onData(data, end_stream);
   closeRemote(end_stream);
 }
 
 void AsyncStreamImpl::encodeTrailers(HeaderMapPtr&& trailers) {
-#ifndef NDEBUG
-  log_debug("async http request response trailers:");
-  trailers->iterate([](const HeaderEntry& header, void*) -> void {
-    log_debug("  '{}':'{}'", header.key().c_str(), header.value().c_str());
-  }, nullptr);
+#ifndef NVLOG
+  ENVOY_LOG(debug, "async http request response trailers:");
+  trailers->iterate(
+      [](const HeaderEntry& header, void*) -> void {
+        ENVOY_LOG(debug, "  '{}':'{}'", header.key().c_str(), header.value().c_str());
+      },
+      nullptr);
 #endif
-
+  ASSERT(!remote_closed_);
   stream_callbacks_.onTrailers(std::move(trailers));
   closeRemote(true);
 }
 
 void AsyncStreamImpl::sendHeaders(HeaderMap& headers, bool end_stream) {
-  headers.insertEnvoyInternalRequest().value(Headers::get().EnvoyInternalRequestValues.True);
+  headers.insertEnvoyInternalRequest().value().setReference(
+      Headers::get().EnvoyInternalRequestValues.True);
   Utility::appendXff(headers, *parent_.config_.local_info_.address());
   router_.decodeHeaders(headers, end_stream);
   closeLocal(end_stream);
@@ -135,17 +143,16 @@ void AsyncStreamImpl::closeRemote(bool end_stream) {
 }
 
 void AsyncStreamImpl::reset() {
-  reset_callback_();
+  router_.onDestroy();
   resetStream();
 }
 
 void AsyncStreamImpl::cleanup() {
-  reset_callback_ = nullptr;
-
+  local_closed_ = remote_closed_ = true;
   // This will destroy us, but only do so if we are actually in a list. This does not happen in
   // the immediate failure case.
   if (inserted()) {
-    removeFromList(parent_.active_streams_);
+    dispatcher().deferredDelete(removeFromList(parent_.active_streams_));
   }
 }
 
@@ -158,7 +165,9 @@ AsyncRequestImpl::AsyncRequestImpl(MessagePtr&& request, AsyncClientImpl& parent
                                    AsyncClient::Callbacks& callbacks,
                                    const Optional<std::chrono::milliseconds>& timeout)
     : AsyncStreamImpl(parent, *this, timeout), request_(std::move(request)), callbacks_(callbacks) {
+}
 
+void AsyncRequestImpl::initialize() {
   sendHeaders(request_->headers(), !request_->body());
   if (!remoteClosed() && request_->body()) {
     sendData(*request_->body(), true);
@@ -204,4 +213,5 @@ void AsyncRequestImpl::cancel() {
   reset();
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

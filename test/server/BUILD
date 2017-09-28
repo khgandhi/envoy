@@ -3,6 +3,7 @@ licenses(["notice"])  # Apache 2
 load(
     "//bazel:envoy_build_system.bzl",
     "envoy_cc_test",
+    "envoy_cc_test_library",
     "envoy_package",
 )
 
@@ -18,14 +19,16 @@ envoy_cc_test(
 envoy_cc_test(
     name = "configuration_impl_test",
     srcs = ["configuration_impl_test.cc"],
-    data = ["//test/common/ssl/test_data:certs"],
     deps = [
+        "//source/common/config:well_known_names",
         "//source/common/event:dispatcher_lib",
+        "//source/common/upstream:cluster_manager_lib",
         "//source/server:configuration_lib",
+        "//source/server/config/stats:statsd_lib",
         "//test/mocks:common_lib",
         "//test/mocks/network:network_mocks",
         "//test/mocks/server:server_mocks",
-        "//test/test_common:environment_lib",
+        "//test/test_common:utility_lib",
     ],
 )
 
@@ -34,11 +37,9 @@ envoy_cc_test(
     srcs = ["connection_handler_test.cc"],
     deps = [
         "//source/common/common:utility_lib",
-        "//source/common/event:dispatcher_lib",
         "//source/common/network:address_lib",
         "//source/common/stats:stats_lib",
         "//source/server:connection_handler_lib",
-        "//test/mocks/api:api_mocks",
         "//test/mocks/network:network_mocks",
         "//test/mocks/server:server_mocks",
     ],
@@ -50,6 +51,16 @@ envoy_cc_test(
     deps = [
         "//source/server:drain_manager_lib",
         "//test/mocks/server:server_mocks",
+    ],
+)
+
+envoy_cc_test(
+    name = "init_manager_impl_test",
+    srcs = ["init_manager_impl_test.cc"],
+    deps = [
+        "//source/server:init_manager_lib",
+        "//test/mocks:common_lib",
+        "//test/mocks/init:init_mocks",
     ],
 )
 
@@ -77,18 +88,64 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
+    name = "lds_api_test",
+    srcs = ["lds_api_test.cc"],
+    deps = [
+        "//source/common/config:utility_lib",
+        "//source/server:lds_api_lib",
+        "//test/mocks/server:server_mocks",
+        "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "listener_manager_impl_test",
+    srcs = ["listener_manager_impl_test.cc"],
+    data = ["//test/common/ssl/test_data:certs"],
+    deps = [
+        ":utility_lib",
+        "//source/server:listener_manager_lib",
+        "//test/mocks/server:server_mocks",
+        "//test/test_common:environment_lib",
+    ],
+)
+
+envoy_cc_test(
     name = "server_test",
     srcs = ["server_test.cc"],
     data = [
+        ":node_bootstrap.yaml",
         "//test/config/integration:server.json",
         "//test/config/integration:server_config_files",
     ],
     deps = [
+        "//source/common/common:version_lib",
         "//source/server:server_lib",
+        "//source/server/config/stats:statsd_lib",
         "//test/integration:integration_lib",
-        "//test/mocks:common_lib",
-        "//test/mocks/init:init_mocks",
         "//test/mocks/server:server_mocks",
         "//test/mocks/stats:stats_mocks",
+    ],
+)
+
+envoy_cc_test_library(
+    name = "utility_lib",
+    hdrs = ["utility.h"],
+    deps = [
+        "//source/common/config:lds_json_lib",
+        "//source/common/json:json_loader_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "worker_impl_test",
+    srcs = ["worker_impl_test.cc"],
+    deps = [
+        "//source/common/event:dispatcher_lib",
+        "//source/server:worker_lib",
+        "//test/mocks/network:network_mocks",
+        "//test/mocks/server:server_mocks",
+        "//test/mocks/thread_local:thread_local_mocks",
+        "//test/test_common:utility_lib",
     ],
 )

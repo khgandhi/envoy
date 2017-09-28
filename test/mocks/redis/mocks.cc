@@ -9,9 +9,10 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Invoke;
+using testing::_;
 
+namespace Envoy {
 namespace Redis {
 
 bool operator==(const RespValue& lhs, const RespValue& rhs) {
@@ -50,8 +51,9 @@ bool operator==(const RespValue& lhs, const RespValue& rhs) {
 
 MockEncoder::MockEncoder() {
   ON_CALL(*this, encode(_, _))
-      .WillByDefault(Invoke([this](const RespValue& value, Buffer::Instance& out)
-                                -> void { real_encoder_.encode(value, out); }));
+      .WillByDefault(Invoke([this](const RespValue& value, Buffer::Instance& out) -> void {
+        real_encoder_.encode(value, out);
+      }));
 }
 
 MockEncoder::~MockEncoder() {}
@@ -63,11 +65,12 @@ namespace ConnPool {
 
 MockClient::MockClient() {
   ON_CALL(*this, addConnectionCallbacks(_))
-      .WillByDefault(Invoke([this](Network::ConnectionCallbacks& callbacks)
-                                -> void { callbacks_.push_back(&callbacks); }));
-  ON_CALL(*this, close())
-      .WillByDefault(
-          Invoke([this]() -> void { raiseEvents(Network::ConnectionEvent::LocalClose); }));
+      .WillByDefault(Invoke([this](Network::ConnectionCallbacks& callbacks) -> void {
+        callbacks_.push_back(&callbacks);
+      }));
+  ON_CALL(*this, close()).WillByDefault(Invoke([this]() -> void {
+    raiseEvent(Network::ConnectionEvent::LocalClose);
+  }));
 }
 
 MockClient::~MockClient() {}
@@ -81,7 +84,7 @@ MockPoolCallbacks::~MockPoolCallbacks() {}
 MockInstance::MockInstance() {}
 MockInstance::~MockInstance() {}
 
-} // ConnPool
+} // namespace ConnPool
 
 namespace CommandSplitter {
 
@@ -94,5 +97,6 @@ MockSplitCallbacks::~MockSplitCallbacks() {}
 MockInstance::MockInstance() {}
 MockInstance::~MockInstance() {}
 
-} // CommandSplitter
-} // Redis
+} // namespace CommandSplitter
+} // namespace Redis
+} // namespace Envoy

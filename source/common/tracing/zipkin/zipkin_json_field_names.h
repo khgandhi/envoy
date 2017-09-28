@@ -4,6 +4,7 @@
 
 #include "common/common/singleton.h"
 
+namespace Envoy {
 namespace Zipkin {
 
 class ZipkinJsonFieldNameValues {
@@ -33,4 +34,5 @@ public:
 
 typedef ConstSingleton<ZipkinJsonFieldNameValues> ZipkinJsonFieldNames;
 
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

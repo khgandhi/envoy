@@ -8,9 +8,11 @@
 #include "common/common/macros.h"
 #include "common/common/version.h"
 
+#include "fmt/format.h"
 #include "spdlog/spdlog.h"
 #include "tclap/CmdLine.h"
 
+namespace Envoy {
 OptionsImpl::OptionsImpl(int argc, char** argv, const std::string& hot_restart_version,
                          spdlog::level::level_enum default_log_level) {
   std::string log_levels_string = "Log levels: ";
@@ -31,9 +33,15 @@ OptionsImpl::OptionsImpl(int argc, char** argv, const std::string& hot_restart_v
                                            "", "string", cmd);
   TCLAP::ValueArg<std::string> admin_address_path("", "admin-address-path", "Admin address path",
                                                   false, "", "string", cmd);
+  TCLAP::ValueArg<std::string> local_address_ip_version("", "local-address-ip-version",
+                                                        "The local "
+                                                        "IP address version (v4 or v6).",
+                                                        false, "v4", "string", cmd);
   TCLAP::ValueArg<std::string> log_level("l", "log-level", log_levels_string, false,
                                          spdlog::level::level_names[default_log_level], "string",
                                          cmd);
+  TCLAP::ValueArg<std::string> log_path("", "log-path", "Path to logfile", false, "", "string",
+                                        cmd);
   TCLAP::ValueArg<uint64_t> restart_epoch("", "restart-epoch", "hot restart epoch #", false, 0,
                                           "uint64_t", cmd);
   TCLAP::SwitchArg hot_restart_version_option("", "hot-restart-version",
@@ -52,6 +60,10 @@ OptionsImpl::OptionsImpl(int argc, char** argv, const std::string& hot_restart_v
   TCLAP::ValueArg<uint64_t> parent_shutdown_time_s("", "parent-shutdown-time-s",
                                                    "Hot restart parent shutdown time in seconds",
                                                    false, 900, "uint64_t", cmd);
+  TCLAP::ValueArg<std::string> mode("", "mode",
+                                    "One of 'serve' (default; validate configs and then serve "
+                                    "traffic normally) or 'validate' (validate configs and exit).",
+                                    false, "serve", "string", cmd);
 
   try {
     cmd.parse(argc, argv);
@@ -72,11 +84,31 @@ OptionsImpl::OptionsImpl(int argc, char** argv, const std::string& hot_restart_v
     }
   }
 
+  if (mode.getValue() == "serve") {
+    mode_ = Server::Mode::Serve;
+  } else if (mode.getValue() == "validate") {
+    mode_ = Server::Mode::Validate;
+  } else {
+    std::cerr << "error: unknown mode '" << mode.getValue() << "'" << std::endl;
+    exit(1);
+  }
+
+  if (local_address_ip_version.getValue() == "v4") {
+    local_address_ip_version_ = Network::Address::IpVersion::v4;
+  } else if (local_address_ip_version.getValue() == "v6") {
+    local_address_ip_version_ = Network::Address::IpVersion::v6;
+  } else {
+    std::cerr << "error: unknown IP address version '" << local_address_ip_version.getValue() << "'"
+              << std::endl;
+    exit(1);
+  }
+
   // For base ID, scale what the user inputs by 10 so that we have spread for domain sockets.
   base_id_ = base_id.getValue() * 10;
   concurrency_ = concurrency.getValue();
   config_path_ = config_path.getValue();
   admin_address_path_ = admin_address_path.getValue();
+  log_path_ = log_path.getValue();
   restart_epoch_ = restart_epoch.getValue();
   service_cluster_ = service_cluster.getValue();
   service_node_ = service_node.getValue();
@@ -85,3 +117,4 @@ OptionsImpl::OptionsImpl(int argc, char** argv, const std::string& hot_restart_v
   drain_time_ = std::chrono::seconds(drain_time_s.getValue());
   parent_shutdown_time_ = std::chrono::seconds(parent_shutdown_time_s.getValue());
 }
+} // namespace Envoy

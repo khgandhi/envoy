@@ -6,6 +6,7 @@
 
 #include "common/common/assert.h"
 
+namespace Envoy {
 namespace Network {
 
 void FilterManagerImpl::addWriteFilter(WriteFilterSharedPtr filter) {
@@ -81,4 +82,5 @@ FilterStatus FilterManagerImpl::onWrite() {
   return FilterStatus::Continue;
 }
 
-} // Network
+} // namespace Network
+} // namespace Envoy

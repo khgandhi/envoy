@@ -1,5 +1,4 @@
 #include <chrono>
-#include <fstream>
 #include <string>
 
 #include "common/common/thread.h"
@@ -14,7 +13,6 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::InSequence;
 using testing::Invoke;
 using testing::NiceMock;
@@ -22,12 +20,16 @@ using testing::Return;
 using testing::SaveArg;
 using testing::Sequence;
 using testing::Throw;
+using testing::_;
+
+namespace Envoy {
 
 TEST(FileSystemImpl, BadFile) {
   Event::MockDispatcher dispatcher;
   Thread::MutexBasicLockable lock;
   Stats::IsolatedStoreImpl store;
   Filesystem::OsSysCallsImpl os_sys_calls;
+  EXPECT_CALL(dispatcher, createTimer_(_));
   EXPECT_THROW(Filesystem::FileImpl("", dispatcher, lock, os_sys_calls, store,
                                     std::chrono::milliseconds(10000)),
                EnvoyException);
@@ -45,13 +47,8 @@ TEST(FileSystemImpl, directoryExists) {
 }
 
 TEST(FileSystemImpl, fileReadToEndSuccess) {
-  const std::string file_path = TestEnvironment::temporaryPath("test_envoy");
-  unlink(file_path.c_str());
-  std::ofstream file(file_path);
-
   const std::string data = "test string\ntest";
-  file << data;
-  file.close();
+  const std::string file_path = TestEnvironment::writeStringToFileForTest("test_envoy", data);
 
   EXPECT_EQ(data, Filesystem::fileReadToEnd(file_path));
 }
@@ -91,6 +88,63 @@ TEST(FileSystemImpl, flushToLogFilePeriodically) {
     while (os_sys_calls.num_writes_ != 1) {
       os_sys_calls.write_event_.wait(os_sys_calls.write_mutex_);
     }
+  }
+
+  EXPECT_CALL(os_sys_calls, write_(_, _, _))
+      .WillOnce(Invoke([](int fd, const void* buffer, size_t num_bytes) -> ssize_t {
+        std::string written = std::string(reinterpret_cast<const char*>(buffer), num_bytes);
+        EXPECT_EQ("test2", written);
+        EXPECT_EQ(5, fd);
+
+        return num_bytes;
+      }));
+
+  // make sure timer is re-enabled on callback call
+  file.write("test2");
+  EXPECT_CALL(*timer, enableTimer(std::chrono::milliseconds(40)));
+  timer->callback_();
+
+  {
+    std::unique_lock<Thread::BasicLockable> lock(os_sys_calls.write_mutex_);
+    while (os_sys_calls.num_writes_ != 2) {
+      os_sys_calls.write_event_.wait(os_sys_calls.write_mutex_);
+    }
+  }
+}
+
+TEST(FileSystemImpl, flushToLogFileOnDemand) {
+  NiceMock<Event::MockDispatcher> dispatcher;
+  NiceMock<Event::MockTimer>* timer = new NiceMock<Event::MockTimer>(&dispatcher);
+
+  Thread::MutexBasicLockable mutex;
+  Stats::IsolatedStoreImpl stats_store;
+  NiceMock<Filesystem::MockOsSysCalls> os_sys_calls;
+
+  EXPECT_CALL(os_sys_calls, open_(_, _, _)).WillOnce(Return(5));
+  Filesystem::FileImpl file("", dispatcher, mutex, os_sys_calls, stats_store,
+                            std::chrono::milliseconds(40));
+
+  EXPECT_CALL(*timer, enableTimer(std::chrono::milliseconds(40)));
+  EXPECT_CALL(os_sys_calls, write_(_, _, _))
+      .WillOnce(Invoke([](int fd, const void* buffer, size_t num_bytes) -> ssize_t {
+        std::string written = std::string(reinterpret_cast<const char*>(buffer), num_bytes);
+        EXPECT_EQ("test", written);
+        EXPECT_EQ(5, fd);
+
+        return num_bytes;
+      }));
+
+  file.write("test");
+
+  {
+    std::unique_lock<Thread::BasicLockable> lock(os_sys_calls.write_mutex_);
+    EXPECT_EQ(0, os_sys_calls.num_writes_);
+  }
+
+  file.flush();
+  {
+    std::unique_lock<Thread::BasicLockable> lock(os_sys_calls.write_mutex_);
+    EXPECT_EQ(1, os_sys_calls.num_writes_);
   }
 
   EXPECT_CALL(os_sys_calls, write_(_, _, _))
@@ -276,3 +330,4 @@ TEST(FilesystemImpl, bigDataChunkShouldBeFlushedWithoutTimer) {
     }
   }
 }
+} // namespace Envoy

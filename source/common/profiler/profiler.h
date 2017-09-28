@@ -2,6 +2,7 @@
 
 #include <string>
 
+namespace Envoy {
 namespace Profiler {
 
 /**
@@ -34,4 +35,5 @@ private:
   static void forceLink();
 };
 
-} // Profiler
+} // namespace Profiler
+} // namespace Envoy

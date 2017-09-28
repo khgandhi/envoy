@@ -2,20 +2,24 @@
 
 #include <string>
 
-#include "server/config/network/http_connection_manager.h"
+#include "envoy/server/filter_config.h"
 
+#include "common/config/well_known_names.h"
+
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
 /**
  * Config registration for http dynamodb filter.
  */
-class DynamoFilterConfig : public HttpFilterConfigFactory {
+class DynamoFilterConfig : public NamedHttpFilterConfigFactory {
 public:
-  HttpFilterFactoryCb tryCreateFilterFactory(HttpFilterType type, const std::string& name,
-                                             const Json::Object&, const std::string& stat_prefix,
-                                             Server::Instance& server) override;
+  HttpFilterFactoryCb createFilterFactory(const Json::Object&, const std::string& stat_prefix,
+                                          FactoryContext& context) override;
+  std::string name() override { return Config::HttpFilterNames::get().DYNAMO; }
 };
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

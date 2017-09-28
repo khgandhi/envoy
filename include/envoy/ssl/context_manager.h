@@ -6,6 +6,7 @@
 #include "envoy/ssl/context_config.h"
 #include "envoy/stats/stats.h"
 
+namespace Envoy {
 namespace Ssl {
 
 /**
@@ -16,17 +17,19 @@ public:
   virtual ~ContextManager() {}
 
   /**
-   * Builds an ClientContext from an ContextConfig
+   * Builds a ClientContext from a ClientContextConfig.
    */
-  virtual ClientContextPtr createSslClientContext(Stats::Scope& scope, ContextConfig& config) PURE;
+  virtual ClientContextPtr createSslClientContext(Stats::Scope& scope,
+                                                  ClientContextConfig& config) PURE;
 
   /**
-   * Builds an ServerContext from an ContextConfig
+   * Builds a ServerContext from a ServerContextConfig.
    */
-  virtual ServerContextPtr createSslServerContext(Stats::Scope& scope, ContextConfig& config) PURE;
+  virtual ServerContextPtr createSslServerContext(Stats::Scope& scope,
+                                                  ServerContextConfig& config) PURE;
 
   /**
-   * @return the number of days until the next certificate being managed will expire
+   * @return the number of days until the next certificate being managed will expire.
    */
   virtual size_t daysUntilFirstCertExpires() PURE;
 
@@ -36,4 +39,5 @@ public:
   virtual void iterateContexts(std::function<void(Context&)> callback) PURE;
 };
 
-} // Ssl
+} // namespace Ssl
+} // namespace Envoy

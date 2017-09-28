@@ -10,20 +10,24 @@
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/upstream/mocks.h"
 
+#include "fmt/format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "spdlog/spdlog.h"
 
 using testing::NiceMock;
 using testing::Return;
 
+namespace Envoy {
 namespace Upstream {
 
 static HostSharedPtr newTestHost(Upstream::ClusterInfoConstSharedPtr cluster,
                                  const std::string& url, uint32_t weight = 1,
                                  const std::string& zone = "") {
-  return HostSharedPtr{
-      new HostImpl(cluster, "", Network::Utility::resolveUrl(url), false, weight, zone)};
+  envoy::api::v2::Locality locality;
+  locality.set_zone(zone);
+  return HostSharedPtr{new HostImpl(cluster, "", Network::Utility::resolveUrl(url),
+                                    envoy::api::v2::Metadata::default_instance(), weight,
+                                    locality)};
 }
 
 /**
@@ -66,7 +70,7 @@ public:
     std::map<std::string, uint32_t> hits;
     for (uint32_t i = 0; i < total_number_of_requests; ++i) {
       HostSharedPtr from_host = selectOriginatingHost(*originating_hosts);
-      uint32_t from_zone = atoi(from_host->zone().c_str());
+      uint32_t from_zone = atoi(from_host->locality().zone().c_str());
 
       // Populate host set for upstream cluster.
       HostListsSharedPtr per_zone_upstream(new std::vector<std::vector<HostSharedPtr>>());
@@ -102,7 +106,8 @@ public:
     for (const auto& host_hit_num_pair : hits) {
       double percent_diff = std::abs((mean - host_hit_num_pair.second) / mean) * 100;
       std::cout << fmt::format("url:{}, hits:{}, {} % from mean", host_hit_num_pair.first,
-                               host_hit_num_pair.second, percent_diff) << std::endl;
+                               host_hit_num_pair.second, percent_diff)
+                << std::endl;
     }
   }
 
@@ -188,4 +193,5 @@ TEST_F(DISABLED_SimulationTest, unequalZoneDistribution6) {
   run({3U, 2U, 5U}, {3U, 4U, 5U}, {3U, 4U, 5U});
 }
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

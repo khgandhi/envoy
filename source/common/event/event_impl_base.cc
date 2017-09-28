@@ -2,6 +2,7 @@
 
 #include "event2/event.h"
 
+namespace Envoy {
 namespace Event {
 
 ImplBase::~ImplBase() {
@@ -9,4 +10,5 @@ ImplBase::~ImplBase() {
   event_del(&raw_event_);
 }
 
-} // Event
+} // namespace Event
+} // namespace Envoy

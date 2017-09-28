@@ -7,12 +7,13 @@
 #include "test/test_common/environment.h"
 #include "test/test_common/utility.h"
 
+#include "fmt/format.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "spdlog/spdlog.h"
 
 using testing::_;
 
+namespace Envoy {
 namespace Json {
 
 std::vector<std::string> generateTestInputs() {
@@ -28,7 +29,7 @@ std::vector<std::string> generateTestInputs() {
 class ConfigSchemasTest : public ::testing::TestWithParam<std::string> {};
 
 TEST_P(ConfigSchemasTest, CheckValidationExpectation) {
-  ObjectPtr json = Factory::loadFromFile(GetParam());
+  ObjectSharedPtr json = Factory::loadFromFile(GetParam());
 
   // lookup schema in test input
   std::string schema, schema_name{json->getString("schema")};
@@ -58,4 +59,5 @@ TEST_P(ConfigSchemasTest, CheckValidationExpectation) {
 }
 
 INSTANTIATE_TEST_CASE_P(Default, ConfigSchemasTest, testing::ValuesIn(generateTestInputs()));
-}
+} // namespace Json
+} // namespace Envoy

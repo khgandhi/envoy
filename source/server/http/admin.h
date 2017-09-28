@@ -7,16 +7,19 @@
 #include "envoy/http/filter.h"
 #include "envoy/network/listen_socket.h"
 #include "envoy/server/admin.h"
+#include "envoy/server/instance.h"
 #include "envoy/upstream/outlier_detection.h"
 #include "envoy/upstream/resource_manager.h"
 
 #include "common/common/logger.h"
+#include "common/common/macros.h"
 #include "common/http/conn_manager_impl.h"
 #include "common/http/date_provider_impl.h"
 #include "common/http/utility.h"
 
 #include "server/config/network/http_connection_manager.h"
 
+namespace Envoy {
 namespace Server {
 
 /**
@@ -37,10 +40,9 @@ public:
   Network::ListenSocket& mutable_socket() { return *socket_; }
 
   // Server::Admin
-  void addHandler(const std::string& prefix, const std::string& help_text,
-                  HandlerCb callback) override {
-    handlers_.push_back({prefix, help_text, callback});
-  }
+  bool addHandler(const std::string& prefix, const std::string& help_text, HandlerCb callback,
+                  bool removable) override;
+  bool removeHandler(const std::string& prefix) override;
 
   // Network::FilterChainFactory
   bool createFilterChain(Network::Connection& connection) override;
@@ -67,6 +69,12 @@ public:
   Http::ConnectionManagerStats& stats() override { return stats_; }
   Http::ConnectionManagerTracingStats& tracingStats() override { return tracing_stats_; }
   bool useRemoteAddress() override { return true; }
+  Http::ForwardClientCertType forwardClientCert() override {
+    return Http::ForwardClientCertType::Sanitize;
+  }
+  const std::vector<Http::ClientCertDetailsType>& setCurrentClientCertDetails() const override {
+    return set_current_client_cert_details_;
+  }
   const Network::Address::Instance& localAddress() override;
   const Optional<std::string>& userAgent() override { return user_agent_; }
   const Http::TracingConnectionManagerConfig* tracingConfig() override { return nullptr; }
@@ -79,6 +87,7 @@ private:
     const std::string prefix_;
     const std::string help_text_;
     const HandlerCb handler_;
+    const bool removable_;
   };
 
   /**
@@ -89,6 +98,7 @@ private:
 
     // Router::RouteConfigProvider
     Router::ConfigConstSharedPtr config() override { return config_; }
+    const std::string versionInfo() const override { CONSTRUCT_ON_FIRST_USE(std::string, ""); }
 
     Router::ConfigConstSharedPtr config_;
   };
@@ -132,6 +142,7 @@ private:
   Optional<std::chrono::milliseconds> idle_timeout_;
   Optional<std::string> user_agent_;
   Http::SlowDateProviderImpl date_provider_;
+  std::vector<Http::ClientCertDetailsType> set_current_client_cert_details_;
 };
 
 /**
@@ -140,6 +151,9 @@ private:
 class AdminFilter : public Http::StreamDecoderFilter, Logger::Loggable<Logger::Id::admin> {
 public:
   AdminFilter(AdminImpl& parent);
+
+  // Http::StreamFilterBase
+  void onDestroy() override {}
 
   // Http::StreamDecoderFilter
   Http::FilterHeadersStatus decodeHeaders(Http::HeaderMap& headers, bool end_stream) override;
@@ -160,4 +174,5 @@ private:
   Http::HeaderMap* request_headers_{};
 };
 
-} // Server
+} // namespace Server
+} // namespace Envoy

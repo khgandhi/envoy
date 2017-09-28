@@ -14,13 +14,14 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::DoAll;
 using testing::InSequence;
 using testing::NiceMock;
-using testing::ReturnRef;
+using testing::Return;
 using testing::SaveArg;
+using testing::_;
 
+namespace Envoy {
 namespace Http {
 
 class BufferFilterTest : public testing::Test {
@@ -69,33 +70,14 @@ TEST_F(BufferFilterTest, RequestTimeout) {
   TestHeaderMapImpl headers;
   EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_.decodeHeaders(headers, false));
 
-  TestHeaderMapImpl response_headers{{":status", "408"}};
-  EXPECT_CALL(callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), true));
+  TestHeaderMapImpl response_headers{
+      {":status", "408"}, {"content-length", "22"}, {"content-type", "text/plain"}};
+  EXPECT_CALL(callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), false));
+  EXPECT_CALL(callbacks_, encodeData(_, true));
   timer_->callback_();
 
-  callbacks_.reset_callback_();
+  filter_.onDestroy();
   EXPECT_EQ(1U, config_->stats_.rq_timeout_.value());
-}
-
-TEST_F(BufferFilterTest, RequestTooLarge) {
-  InSequence s;
-
-  expectTimerCreate();
-
-  TestHeaderMapImpl headers;
-  EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_.decodeHeaders(headers, false));
-
-  Buffer::InstancePtr buffered_data(new Buffer::OwnedImpl("buffered"));
-  ON_CALL(callbacks_, decodingBuffer()).WillByDefault(ReturnRef(buffered_data));
-
-  Buffer::OwnedImpl data1("hello");
-  config_->max_request_bytes_ = 1;
-  TestHeaderMapImpl response_headers{{":status", "413"}};
-  EXPECT_CALL(callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), true));
-  EXPECT_EQ(FilterDataStatus::StopIterationAndBuffer, filter_.decodeData(data1, false));
-
-  callbacks_.reset_callback_();
-  EXPECT_EQ(1U, config_->stats_.rq_too_large_.value());
 }
 
 TEST_F(BufferFilterTest, TxResetAfterEndStream) {
@@ -114,7 +96,8 @@ TEST_F(BufferFilterTest, TxResetAfterEndStream) {
 
   // It's possible that the stream will be reset on the TX side even after RX end stream. Mimic
   // that here.
-  callbacks_.reset_callback_();
+  filter_.onDestroy();
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

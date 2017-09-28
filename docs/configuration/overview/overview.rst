@@ -3,19 +3,27 @@
 Overview
 ========
 
-The Envoy configuration format is written in JSON and is validated against a JSON schema. The
+The Envoy configuration format is written in JSON and is validated against a JSON schema.  The
 schema can be found in :repo:`source/common/json/config_schemas.cc`. The main configuration for the
 server is contained within the listeners and cluster manager sections. The other top level elements
 specify miscellaneous configuration.
+
+YAML support is also provided as a syntactic convenience for hand-written configurations. Envoy will
+internally convert YAML to JSON if a file path ends with .yaml. In the rest of the configuration
+documentation, we refer exclusively to JSON. Envoy expects unambiguous YAML scalars, so if a cluster
+name (which should be a string) is called *true*, it should be written in the configuration YAML as
+*"true"*. The same applies to integer and floating point values (e.g. *1* vs. *1.0* vs. *"1.0"*).
+
 
 .. code-block:: json
 
   {
     "listeners": [],
+    "lds": "{...}",
     "admin": "{...}",
     "cluster_manager": "{...}",
     "flags_path": "...",
-    "statsd_local_udp_port": "...",
+    "statsd_udp_ip_address": "...",
     "statsd_tcp_cluster_name": "...",
     "stats_flush_interval_ms": "...",
     "watchdog_miss_timeout_ms": "...",
@@ -31,6 +39,12 @@ specify miscellaneous configuration.
   *(required, array)* An array of :ref:`listeners <arch_overview_listeners>` that will be
   instantiated by the server. A single Envoy process can contain any number of listeners.
 
+.. _config_overview_lds:
+
+:ref:`lds <config_listeners_lds>`
+  *(optional, object)* Configuration for the Listener Discovery Service (LDS). If not specified
+  only static listeners are loaded.
+
 :ref:`admin <config_admin>`
   *(required, object)* Configuration for the :ref:`local administration HTTP server
   <operations_admin_interface>`.
@@ -45,9 +59,13 @@ flags_path
   *(optional, string)* The file system path to search for :ref:`startup flag files
   <operations_file_system_flags>`.
 
-statsd_local_udp_port
-  *(optional, integer)* The UDP port of a locally running statsd compliant listener. If specified,
-  :ref:`statistics <arch_overview_statistics>` will be flushed to this port.
+.. _config_overview_statsd_udp_ip_address:
+
+statsd_udp_ip_address
+  *(optional, string)* The UDP address of a running statsd compliant listener. If specified,
+  :ref:`statistics <arch_overview_statistics>` will be flushed to this address. IPv4 addresses should
+  have format host:port (ex: 127.0.0.1:855). IPv6 addresses should have URL format [host]:port
+  (ex: [::1]:855).
 
 statsd_tcp_cluster_name
   *(optional, string)* The name of a cluster manager cluster that is running a TCP statsd compliant

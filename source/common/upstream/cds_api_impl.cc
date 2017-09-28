@@ -1,88 +1,74 @@
 #include "common/upstream/cds_api_impl.h"
 
-#include <chrono>
 #include <string>
-#include <vector>
 
-#include "common/common/assert.h"
-#include "common/http/headers.h"
-#include "common/json/config_schemas.h"
-#include "common/json/json_loader.h"
+#include "common/config/subscription_factory.h"
+#include "common/config/utility.h"
+#include "common/upstream/cds_subscription.h"
 
-#include "spdlog/spdlog.h"
-
+namespace Envoy {
 namespace Upstream {
 
-CdsApiPtr CdsApiImpl::create(const Json::Object& config, ClusterManager& cm,
-                             Event::Dispatcher& dispatcher, Runtime::RandomGenerator& random,
+CdsApiPtr CdsApiImpl::create(const envoy::api::v2::ConfigSource& cds_config,
+                             const Optional<envoy::api::v2::ConfigSource>& eds_config,
+                             ClusterManager& cm, Event::Dispatcher& dispatcher,
+                             Runtime::RandomGenerator& random,
                              const LocalInfo::LocalInfo& local_info, Stats::Scope& scope) {
-  if (!config.hasObject("cds")) {
-    return nullptr;
-  }
-
   return CdsApiPtr{
-      new CdsApiImpl(*config.getObject("cds"), cm, dispatcher, random, local_info, scope)};
+      new CdsApiImpl(cds_config, eds_config, cm, dispatcher, random, local_info, scope)};
 }
 
-CdsApiImpl::CdsApiImpl(const Json::Object& config, ClusterManager& cm,
+CdsApiImpl::CdsApiImpl(const envoy::api::v2::ConfigSource& cds_config,
+                       const Optional<envoy::api::v2::ConfigSource>& eds_config, ClusterManager& cm,
                        Event::Dispatcher& dispatcher, Runtime::RandomGenerator& random,
                        const LocalInfo::LocalInfo& local_info, Stats::Scope& scope)
-    : RestApiFetcher(cm, config.getObject("cluster")->getString("name"), dispatcher, random,
-                     std::chrono::milliseconds(config.getInteger("refresh_delay_ms", 30000))),
-      local_info_(local_info),
-      stats_({ALL_CDS_STATS(POOL_COUNTER_PREFIX(scope, "cluster_manager.cds."))}) {
-  if (local_info.clusterName().empty() || local_info.nodeName().empty()) {
-    throw EnvoyException("cds: setting --service-cluster and --service-node are required");
-  }
+    : cm_(cm), scope_(scope.createScope("cluster_manager.cds.")) {
+  Config::Utility::checkLocalInfo("cds", local_info);
+  subscription_ =
+      Config::SubscriptionFactory::subscriptionFromConfigSource<envoy::api::v2::Cluster>(
+          cds_config, local_info.node(), dispatcher, cm, random, *scope_,
+          [this, &cds_config, &eds_config, &cm, &dispatcher, &random,
+           &local_info]() -> Config::Subscription<envoy::api::v2::Cluster>* {
+            return new CdsSubscription(Config::Utility::generateStats(*scope_), cds_config,
+                                       eds_config, cm, dispatcher, random, local_info);
+          },
+          "envoy.api.v2.ClusterDiscoveryService.FetchClusters",
+          "envoy.api.v2.ClusterDiscoveryService.StreamClusters");
 }
 
-void CdsApiImpl::createRequest(Http::Message& request) {
-  log_debug("cds: starting request");
-  stats_.update_attempt_.inc();
-  request.headers().insertMethod().value(Http::Headers::get().MethodValues.Get);
-  request.headers().insertPath().value(
-      fmt::format("/v1/clusters/{}/{}", local_info_.clusterName(), local_info_.nodeName()));
-}
-
-void CdsApiImpl::parseResponse(const Http::Message& response) {
-  log_debug("cds: parsing response");
-  Json::ObjectPtr response_json = Json::Factory::loadFromString(response.bodyAsString());
-  response_json->validateSchema(Json::Schema::CDS_SCHEMA);
-  std::vector<Json::ObjectPtr> clusters = response_json->getObjectArray("clusters");
-
+void CdsApiImpl::onConfigUpdate(const ResourceVector& resources) {
   // We need to keep track of which clusters we might need to remove.
   ClusterManager::ClusterInfoMap clusters_to_remove = cm_.clusters();
-  for (auto& cluster : clusters) {
-    std::string cluster_name = cluster->getString("name");
+  for (auto& cluster : resources) {
+    const std::string cluster_name = cluster.name();
     clusters_to_remove.erase(cluster_name);
-    if (cm_.addOrUpdatePrimaryCluster(*cluster)) {
-      log().info("cds: add/update cluster '{}'", cluster_name);
+    if (cm_.addOrUpdatePrimaryCluster(cluster)) {
+      ENVOY_LOG(info, "cds: add/update cluster '{}'", cluster_name);
     }
   }
 
   for (auto cluster : clusters_to_remove) {
-    if (cm_.removePrimaryCluster(cluster.first)) {
-      log().info("cds: remove cluster '{}'", cluster.first);
+    const std::string cluster_name = cluster.first;
+    if (cm_.removePrimaryCluster(cluster_name)) {
+      ENVOY_LOG(info, "cds: remove cluster '{}'", cluster_name);
     }
   }
 
-  stats_.update_success_.inc();
+  runInitializeCallbackIfAny();
 }
 
-void CdsApiImpl::onFetchComplete() {
+void CdsApiImpl::onConfigUpdateFailed(const EnvoyException*) {
+  // We need to allow server startup to continue, even if we have a bad
+  // config.
+  runInitializeCallbackIfAny();
+}
+
+void CdsApiImpl::runInitializeCallbackIfAny() {
   if (initialize_callback_) {
     initialize_callback_();
     initialize_callback_ = nullptr;
   }
 }
 
-void CdsApiImpl::onFetchFailure(EnvoyException* e) {
-  stats_.update_failure_.inc();
-  if (e) {
-    log().warn("cds: fetch failure: {}", e->what());
-  } else {
-    log().info("cds: fetch failure: network error");
-  }
-}
-
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

@@ -9,7 +9,6 @@ HTTP connection manager
 .. code-block:: json
 
   {
-    "type": "read",
     "name": "http_connection_manager",
     "config": {
       "codec_type": "...",
@@ -19,12 +18,15 @@ HTTP connection manager
       "filters": [],
       "add_user_agent": "...",
       "tracing": "{...}",
-      "http_codec_options": "...",
+      "http1_settings": "{...}",
+      "http2_settings": "{...}",
       "server_name": "...",
       "idle_timeout_s": "...",
       "drain_timeout_ms": "...",
       "access_log": [],
       "use_remote_address": "...",
+      "forward_client_cert": "...",
+      "set_current_client_cert": "...",
       "generate_request_id": "..."
     }
   }
@@ -55,11 +57,15 @@ stat_prefix
   connection manager. See the :ref:`statistics <config_http_conn_man_stats>` documentation
   for more information.
 
+.. _config_http_conn_man_rds_option:
+
 :ref:`rds <config_http_conn_man_rds>`
   *(sometimes required, object)* The connection manager configuration must specify one of *rds* or
   *route_config*. If *rds* is specified, the connection manager's route table will be dynamically
   loaded via the RDS API. See the :ref:`documentation <config_http_conn_man_rds>` for more
   information.
+
+.. _config_http_conn_man_route_config:
 
 :ref:`route_config <config_http_conn_man_route_table>`
   *(sometimes required, object)* The connection manager configuration must specify one of *rds* or
@@ -83,19 +89,57 @@ add_user_agent
   *(optional, object)* Presence of the object defines whether the connection manager
   emits :ref:`tracing <arch_overview_tracing>` data to the :ref:`configured tracing provider <config_tracing>`.
 
-.. _config_http_conn_man_http_codec_options:
+.. _config_http_conn_man_http1_settings:
 
-http_codec_options
-  *(optional, string)* Additional options that are passed directly to the codec. Not all options
-  are applicable to all codecs. Possible values are:
+http1_settings
+  *(optional, object)* Additional HTTP/1 settings that are passed to the HTTP/1 codec.
 
-  no_compression
-    The codec will not use compression. In practice this only applies to HTTP/2 which will disable
-    header compression if set.
+  allow_absolute_url
+  *(optional, boolean)* Handle http requests with absolute urls in the requests. These requests are generally
+  sent by clients to forward/explicit proxies. This allows clients to configure envoy as their http proxy.
+  In Unix, for example, this is typically done by setting the http_proxy environment variable.
 
-  These are the same options available in the upstream cluster :ref:`http_codec_options
-  <config_cluster_manager_cluster_http_codec_options>` option. See the comment there about
-  disabling HTTP/2 header compression.
+.. _config_http_conn_man_http2_settings:
+
+http2_settings
+  *(optional, object)* Additional HTTP/2 settings that are passed directly to the HTTP/2 codec.
+  Currently supported settings are:
+
+  hpack_table_size
+    *(optional, integer)* `Maximum table size <http://httpwg.org/specs/rfc7541.html#rfc.section.4.2>`_
+    (in octets) that the encoder is permitted to use for
+    the dynamic HPACK table. Valid values range from 0 to 4294967295 (2^32 - 1) and defaults to 4096.
+    0 effectively disables header compression.
+
+  max_concurrent_streams
+    *(optional, integer)* `Maximum concurrent streams
+    <http://httpwg.org/specs/rfc7540.html#rfc.section.5.1.2>`_
+    allowed for peer on one HTTP/2 connection.
+    Valid values range from 1 to 2147483647 (2^31 - 1) and defaults to 2147483647.
+
+.. _config_http_conn_man_http2_settings_initial_stream_window_size:
+
+  initial_stream_window_size
+    *(optional, integer)* `Initial stream-level flow-control window
+    <http://httpwg.org/specs/rfc7540.html#rfc.section.6.9.2>`_ size. Valid values range from 65535
+    (2^16 - 1, HTTP/2 default) to 2147483647 (2^31 - 1, HTTP/2 maximum) and defaults to 268435456
+    (256 * 1024 * 1024).
+
+    NOTE: 65535 is the initial window size from HTTP/2 spec. We only support increasing the default window
+    size now, so it's also the minimum.
+
+    This field also acts as a soft limit on the number of bytes Envoy will buffer per-stream in the
+    HTTP/2 codec buffers.  Once the buffer reaches this pointer, watermark callbacks will fire to
+    stop the flow of data to the codec buffers.
+
+  initial_connection_window_size
+    *(optional, integer)* Similar to :ref:`initial_stream_window_size
+    <config_http_conn_man_http2_settings_initial_stream_window_size>`, but for connection-level flow-control
+    window. Currently , this has the same minimum/maximum/default as :ref:`initial_stream_window_size
+    <config_http_conn_man_http2_settings_initial_stream_window_size>`.
+
+  These are the same options available in the upstream cluster :ref:`http2_settings
+  <config_cluster_manager_cluster_http2_settings>` option.
 
 .. _config_http_conn_man_server_name:
 
@@ -109,7 +153,7 @@ idle_timeout_s
   manager. The idle timeout is defined as the period in which there are no active requests. If not
   set, there is no idle timeout. When the idle timeout is reached the connection will be closed. If
   the connection is an HTTP/2 connection a drain sequence will occur prior to closing the
-  connection. See :ref:`drain_timeout_s <config_http_conn_man_drain_timeout_ms>`.
+  connection. See :ref:`drain_timeout_ms <config_http_conn_man_drain_timeout_ms>`.
 
 .. _config_http_conn_man_drain_timeout_ms:
 
@@ -137,6 +181,31 @@ use_remote_address
   :ref:`config_http_conn_man_headers_x-envoy-internal`, and
   :ref:`config_http_conn_man_headers_x-envoy-external-address` for more information.
 
+.. _config_http_conn_man_forward_client_cert:
+
+forward_client_cert
+  *(optional, string)* How to handle the
+  :ref:`config_http_conn_man_headers_x-forwarded-client-cert` (XFCC) HTTP header.
+  Possible values are:
+
+  1. **sanitize**: Do not send the XFCC header to the next hop. This is the default value.
+  2. **forward_only**: When the client connection is mTLS (Mutual TLS), forward the XFCC header in the request.
+  3. **always_forward_only**: Always forward the XFCC header in the request, regardless of whether the client connection is mTLS.
+  4. **append_forward**: When the client connection is mTLS, append the client certificate information to the request's XFCC header and forward it.
+  5. **sanitize_set**: When the client connection is mTLS, reset the XFCC header with the client certificate information and send it to the next hop.
+
+  For the format of the XFCC header, please refer to
+  :ref:`config_http_conn_man_headers_x-forwarded-client-cert`.
+
+.. _config_http_conn_man_set_current_client_cert_details:
+
+set_current_client_cert_details
+  *(optional, array)* A list of strings, possible values are *Subject* and *SAN*. This field is
+  valid only when *forward_client_cert* is *append_forward* or *sanitize_set* and the client
+  connection is mTLS. It specifies the fields in the client certificate to be forwarded. Note that
+  in the :ref:`config_http_conn_man_headers_x-forwarded-client-cert` header, `Hash` is always set,
+  and `By` is always set when the client certificate presents the SAN value.
+
 generate_request_id
   *(optional, boolean)* Whether the connection manager will generate the
   :ref:`config_http_conn_man_headers_x-request-id` header if it does not exist. This defaults to
@@ -151,6 +220,7 @@ generate_request_id
   access_log
   tracing
   headers
+  header_sanitizing
   stats
   runtime
   rds

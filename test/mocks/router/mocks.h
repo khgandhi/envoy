@@ -8,12 +8,23 @@
 #include <string>
 #include <vector>
 
+#include "envoy/event/dispatcher.h"
+#include "envoy/init/init.h"
+#include "envoy/json/json_object.h"
+#include "envoy/local_info/local_info.h"
+#include "envoy/router/rds.h"
+#include "envoy/router/route_config_provider_manager.h"
 #include "envoy/router/router.h"
 #include "envoy/router/router_ratelimit.h"
 #include "envoy/router/shadow_writer.h"
+#include "envoy/runtime/runtime.h"
+#include "envoy/stats/stats.h"
+#include "envoy/thread_local/thread_local.h"
+#include "envoy/upstream/cluster_manager.h"
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace Router {
 
 class MockRedirectEntry : public RedirectEntry {
@@ -23,6 +34,26 @@ public:
 
   // Router::Config
   MOCK_CONST_METHOD1(newPath, std::string(const Http::HeaderMap& headers));
+};
+
+class TestCorsPolicy : public CorsPolicy {
+public:
+  // Router::CorsPolicy
+  const std::list<std::string>& allowOrigins() const override { return allow_origin_; };
+  const std::string& allowMethods() const override { return allow_methods_; };
+  const std::string& allowHeaders() const override { return allow_headers_; };
+  const std::string& exposeHeaders() const override { return expose_headers_; };
+  const std::string& maxAge() const override { return max_age_; };
+  const Optional<bool>& allowCredentials() const override { return allow_credentials_; };
+  bool enabled() const override { return enabled_; };
+
+  std::list<std::string> allow_origin_{};
+  std::string allow_methods_{};
+  std::string allow_headers_{};
+  std::string expose_headers_{};
+  std::string max_age_{};
+  Optional<bool> allow_credentials_{};
+  bool enabled_{false};
 };
 
 class TestRetryPolicy : public RetryPolicy {
@@ -45,9 +76,9 @@ public:
   void expectRetry();
 
   MOCK_METHOD0(enabled, bool());
-  MOCK_METHOD3(shouldRetry, bool(const Http::HeaderMap* response_headers,
-                                 const Optional<Http::StreamResetReason>& reset_reason,
-                                 DoRetryCallback callback));
+  MOCK_METHOD3(shouldRetry, RetryStatus(const Http::HeaderMap* response_headers,
+                                        const Optional<Http::StreamResetReason>& reset_reason,
+                                        DoRetryCallback callback));
 
   DoRetryCallback callback_;
 };
@@ -62,7 +93,7 @@ public:
   MOCK_CONST_METHOD0(disableKey, const std::string&());
   MOCK_CONST_METHOD5(populateDescriptors,
                      void(const RouteEntry& route,
-                          std::vector<::RateLimit::Descriptor>& descriptors,
+                          std::vector<Envoy::RateLimit::Descriptor>& descriptors,
                           const std::string& local_service_cluster, const Http::HeaderMap& headers,
                           const std::string& remote_address));
 
@@ -113,10 +144,8 @@ class TestVirtualCluster : public VirtualCluster {
 public:
   // Router::VirtualCluster
   const std::string& name() const override { return name_; }
-  Upstream::ResourcePriority priority() const override { return priority_; }
 
   std::string name_{"fake_virtual_cluster"};
-  Upstream::ResourcePriority priority_{Upstream::ResourcePriority::Default};
 };
 
 class MockVirtualHost : public VirtualHost {
@@ -127,9 +156,11 @@ public:
   // Router::VirtualHost
   MOCK_CONST_METHOD0(name, const std::string&());
   MOCK_CONST_METHOD0(rateLimitPolicy, const RateLimitPolicy&());
+  MOCK_CONST_METHOD0(corsPolicy, const CorsPolicy*());
 
   std::string name_{"fake_vhost"};
   testing::NiceMock<MockRateLimitPolicy> rate_limit_policy_;
+  TestCorsPolicy cors_policy_;
 };
 
 class MockHashPolicy : public HashPolicy {
@@ -138,7 +169,8 @@ public:
   ~MockHashPolicy();
 
   // Router::HashPolicy
-  MOCK_CONST_METHOD1(generateHash, Optional<uint64_t>(const Http::HeaderMap& headers));
+  MOCK_CONST_METHOD2(generateHash, Optional<uint64_t>(const std::string& downstream_address,
+                                                      const Http::HeaderMap& headers));
 };
 
 class MockRouteEntry : public RouteEntry {
@@ -148,7 +180,9 @@ public:
 
   // Router::Config
   MOCK_CONST_METHOD0(clusterName, const std::string&());
-  MOCK_CONST_METHOD1(finalizeRequestHeaders, void(Http::HeaderMap& headers));
+  MOCK_CONST_METHOD2(finalizeRequestHeaders,
+                     void(Http::HeaderMap& headers,
+                          const Http::AccessLog::RequestInfo& request_info));
   MOCK_CONST_METHOD0(hashPolicy, const HashPolicy*());
   MOCK_CONST_METHOD0(priority, Upstream::ResourcePriority());
   MOCK_CONST_METHOD0(rateLimitPolicy, const RateLimitPolicy&());
@@ -159,8 +193,10 @@ public:
   MOCK_CONST_METHOD0(virtualHostName, const std::string&());
   MOCK_CONST_METHOD0(virtualHost, const VirtualHost&());
   MOCK_CONST_METHOD0(autoHostRewrite, bool());
+  MOCK_CONST_METHOD0(useWebSocket, bool());
   MOCK_CONST_METHOD0(opaqueConfig, const std::multimap<std::string, std::string>&());
   MOCK_CONST_METHOD0(includeVirtualHostRateLimits, bool());
+  MOCK_CONST_METHOD0(corsPolicy, const CorsPolicy*());
 
   std::string cluster_name_{"fake_cluster"};
   std::multimap<std::string, std::string> opaque_config_;
@@ -170,6 +206,19 @@ public:
   TestShadowPolicy shadow_policy_;
   testing::NiceMock<MockVirtualHost> virtual_host_;
   MockHashPolicy hash_policy_;
+  TestCorsPolicy cors_policy_;
+};
+
+class MockDecorator : public Decorator {
+public:
+  MockDecorator();
+  ~MockDecorator();
+
+  // Router::Decorator
+  MOCK_CONST_METHOD0(operation, const std::string&());
+  MOCK_CONST_METHOD1(apply, void(Tracing::Span& span));
+
+  std::string operation_{"fake_operation"};
 };
 
 class MockRoute : public Route {
@@ -180,8 +229,10 @@ public:
   // Router::Route
   MOCK_CONST_METHOD0(redirectEntry, const RedirectEntry*());
   MOCK_CONST_METHOD0(routeEntry, const RouteEntry*());
+  MOCK_CONST_METHOD0(decorator, const Decorator*());
 
   testing::NiceMock<MockRouteEntry> route_entry_;
+  testing::NiceMock<MockDecorator> decorator_;
 };
 
 class MockConfig : public Config {
@@ -203,4 +254,19 @@ public:
   std::list<Http::LowerCaseString> response_headers_to_remove_;
 };
 
-} // Router
+class MockRouteConfigProviderManager : public ServerRouteConfigProviderManager {
+public:
+  MockRouteConfigProviderManager();
+  ~MockRouteConfigProviderManager();
+
+  MOCK_METHOD0(routeConfigProviders, std::vector<RdsRouteConfigProviderSharedPtr>());
+  MOCK_METHOD5(getRouteConfigProvider,
+               RouteConfigProviderSharedPtr(const envoy::api::v2::filter::Rds& rds,
+                                            Upstream::ClusterManager& cm, Stats::Scope& scope,
+                                            const std::string& stat_prefix,
+                                            Init::Manager& init_manager));
+  MOCK_METHOD1(removeRouteConfigProvider, void(const std::string& identifier));
+};
+
+} // namespace Router
+} // namespace Envoy

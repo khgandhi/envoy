@@ -9,6 +9,7 @@
 
 using testing::InSequence;
 
+namespace Envoy {
 namespace Event {
 
 class TestDeferredDeletable : public DeferredDeletable {
@@ -50,4 +51,5 @@ TEST(DispatcherImplTest, DeferredDelete) {
   dispatcher.clearDeferredDeleteList();
 }
 
-} // Event
+} // namespace Event
+} // namespace Envoy

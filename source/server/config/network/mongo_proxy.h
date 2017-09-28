@@ -2,21 +2,26 @@
 
 #include <string>
 
-#include "server/configuration_impl.h"
+#include "envoy/server/filter_config.h"
 
+#include "common/config/well_known_names.h"
+
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
 /**
- * Config registration for the mongo proxy filter. @see NetworkFilterConfigFactory.
+ * Config registration for the mongo proxy filter. @see NamedNetworkFilterConfigFactory.
  */
-class MongoProxyFilterConfigFactory : public NetworkFilterConfigFactory {
+class MongoProxyFilterConfigFactory : public NamedNetworkFilterConfigFactory {
 public:
-  // NetworkFilterConfigFactory
-  NetworkFilterFactoryCb tryCreateFilterFactory(NetworkFilterType type, const std::string& name,
-                                                const Json::Object& config,
-                                                Server::Instance& server);
+  // NamedNetworkFilterConfigFactory
+  NetworkFilterFactoryCb createFilterFactory(const Json::Object& config,
+                                             FactoryContext& context) override;
+
+  std::string name() override { return Config::NetworkFilterNames::get().MONGO_PROXY; }
 };
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

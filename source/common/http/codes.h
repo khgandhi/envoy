@@ -8,6 +8,7 @@
 #include "envoy/http/header_map.h"
 #include "envoy/stats/stats.h"
 
+namespace Envoy {
 namespace Http {
 
 /**
@@ -18,11 +19,11 @@ public:
   /**
    * Charge a simple response stat to an upstream.
    */
-  static void chargeBasicResponseStat(Stats::Scope& store, const std::string& prefix,
+  static void chargeBasicResponseStat(Stats::Scope& scope, const std::string& prefix,
                                       Code response_code);
 
   struct ResponseStatInfo {
-    Stats::Store& global_store_;
+    Stats::Scope& global_scope_;
     Stats::Scope& cluster_scope_;
     const std::string& prefix_;
     const HeaderMap& response_headers_;
@@ -42,7 +43,7 @@ public:
   static void chargeResponseStat(const ResponseStatInfo& info);
 
   struct ResponseTimingInfo {
-    Stats::Store& global_store_;
+    Stats::Scope& global_scope_;
     Stats::Scope& cluster_scope_;
     const std::string& prefix_;
     std::chrono::milliseconds response_time_;
@@ -75,4 +76,5 @@ public:
   static std::string groupStringForResponseCode(Code response_code);
 };
 
-} // Http
+} // namespace Http
+} // namespace Envoy

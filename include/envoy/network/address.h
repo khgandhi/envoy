@@ -10,6 +10,7 @@
 
 #include "envoy/common/pure.h"
 
+namespace Envoy {
 namespace Network {
 namespace Address {
 
@@ -59,6 +60,12 @@ public:
   virtual bool isAnyAddress() const PURE;
 
   /**
+   * @return whether this address is a valid unicast address, i.e., not an wild card, broadcast, or
+   * multicast address.
+   */
+  virtual bool isUnicastAddress() const PURE;
+
+  /**
    * @return Ipv4 address data IFF version() == IpVersion::v4, otherwise nullptr.
    */
   virtual const Ipv4* ipv4() const PURE;
@@ -91,6 +98,7 @@ public:
   virtual ~Instance() {}
 
   virtual bool operator==(const Instance& rhs) const PURE;
+  bool operator!=(const Instance& rhs) const { return !operator==(rhs); }
 
   /**
    * @return a human readable string for the address.
@@ -104,7 +112,7 @@ public:
 
   /**
    * Bind a socket to this address. The socket should have been created with a call to socket() on
-   * this object.
+   * an Instance of the same address family.
    * @param fd supplies the platform socket handle.
    * @return the platform error code.
    */
@@ -138,5 +146,6 @@ public:
 
 typedef std::shared_ptr<const Instance> InstanceConstSharedPtr;
 
-} // Address
-} // Network
+} // namespace Address
+} // namespace Network
+} // namespace Envoy

@@ -19,14 +19,15 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::InSequence;
 using testing::Invoke;
 using testing::Return;
 using testing::ReturnNew;
 using testing::ReturnRef;
 using testing::WithArg;
+using testing::_;
 
+namespace Envoy {
 namespace Filter {
 namespace Auth {
 namespace ClientSsl {
@@ -48,11 +49,14 @@ public:
     {
       "auth_api_cluster": "vpn",
       "stat_prefix": "vpn",
-      "ip_white_list": [ "1.2.3.4/32" ]
+      "ip_white_list":
+        [ "1.2.3.4/32",
+          "2001:abcd::/64"
+        ]
     }
     )EOF";
 
-    Json::ObjectPtr loader = Json::Factory::loadFromString(json);
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
     EXPECT_CALL(cm_, get("vpn"));
     setupRequest();
     config_ = Config::create(*loader, tls_, cm_, dispatcher_, stats_store_, random_);
@@ -99,7 +103,7 @@ TEST_F(ClientSslAuthFilterTest, NoCluster) {
   }
   )EOF";
 
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
+  Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
   EXPECT_CALL(cm_, get("bad_cluster")).WillOnce(Return(nullptr));
   EXPECT_THROW(Config::create(*loader, tls_, cm_, dispatcher_, stats_store_, random_),
                EnvoyException);
@@ -115,7 +119,7 @@ TEST_F(ClientSslAuthFilterTest, BadClientSslAuthConfig) {
   }
   )EOF";
 
-  Json::ObjectPtr json_config = Json::Factory::loadFromString(json_string);
+  Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json_string);
   EXPECT_THROW(Config::create(*json_config, tls_, cm_, dispatcher_, stats_store_, random_),
                Json::Exception);
 }
@@ -129,7 +133,7 @@ TEST_F(ClientSslAuthFilterTest, NoSsl) {
   EXPECT_EQ(Network::FilterStatus::Continue, instance_->onNewConnection());
   EXPECT_EQ(Network::FilterStatus::Continue, instance_->onData(dummy));
   EXPECT_EQ(Network::FilterStatus::Continue, instance_->onData(dummy));
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::RemoteClose);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
 
   EXPECT_EQ(1U, stats_store_.counter("auth.clientssl.vpn.auth_no_ssl").value());
 
@@ -150,8 +154,8 @@ TEST_F(ClientSslAuthFilterTest, Ssl) {
   EXPECT_CALL(ssl_, sha256PeerCertificateDigest()).WillOnce(Return("digest"));
   EXPECT_CALL(filter_callbacks_.connection_, close(Network::ConnectionCloseType::NoFlush));
   EXPECT_EQ(Network::FilterStatus::StopIteration, instance_->onNewConnection());
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::Connected);
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::RemoteClose);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::Connected);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
 
   // Respond.
   EXPECT_CALL(*interval_timer_, enableTimer(_));
@@ -169,10 +173,10 @@ TEST_F(ClientSslAuthFilterTest, Ssl) {
       .WillOnce(Return("1b7d42ef0025ad89c1c911d6c10d7e86a4cb7c5863b2980abcbad1895f8b5314"));
   EXPECT_EQ(Network::FilterStatus::StopIteration, instance_->onNewConnection());
   EXPECT_CALL(filter_callbacks_, continueReading());
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::Connected);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::Connected);
   EXPECT_EQ(Network::FilterStatus::Continue, instance_->onData(dummy));
   EXPECT_EQ(Network::FilterStatus::Continue, instance_->onData(dummy));
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::RemoteClose);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
 
   // White list case.
   createAuthFilter();
@@ -180,13 +184,24 @@ TEST_F(ClientSslAuthFilterTest, Ssl) {
   EXPECT_CALL(filter_callbacks_.connection_, remoteAddress()).WillOnce(ReturnRef(remote_address2));
   EXPECT_EQ(Network::FilterStatus::StopIteration, instance_->onNewConnection());
   EXPECT_CALL(filter_callbacks_, continueReading());
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::Connected);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::Connected);
   EXPECT_EQ(Network::FilterStatus::Continue, instance_->onData(dummy));
   EXPECT_EQ(Network::FilterStatus::Continue, instance_->onData(dummy));
-  filter_callbacks_.connection_.raiseEvents(Network::ConnectionEvent::RemoteClose);
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
 
+  // IPv6 White list case.
+  createAuthFilter();
+  Network::Address::Ipv6Instance remote_address3("2001:abcd::1");
+  EXPECT_CALL(filter_callbacks_.connection_, remoteAddress()).WillOnce(ReturnRef(remote_address3));
+  EXPECT_EQ(Network::FilterStatus::StopIteration, instance_->onNewConnection());
+  EXPECT_CALL(filter_callbacks_, continueReading());
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::Connected);
+  EXPECT_EQ(Network::FilterStatus::Continue, instance_->onData(dummy));
+  EXPECT_EQ(Network::FilterStatus::Continue, instance_->onData(dummy));
+
+  filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_EQ(1U, stats_store_.counter("auth.clientssl.vpn.update_success").value());
-  EXPECT_EQ(1U, stats_store_.counter("auth.clientssl.vpn.auth_ip_white_list").value());
+  EXPECT_EQ(2U, stats_store_.counter("auth.clientssl.vpn.auth_ip_white_list").value());
   EXPECT_EQ(1U, stats_store_.counter("auth.clientssl.vpn.auth_digest_match").value());
   EXPECT_EQ(1U, stats_store_.counter("auth.clientssl.vpn.auth_digest_no_match").value());
 
@@ -235,6 +250,7 @@ TEST_F(ClientSslAuthFilterTest, Ssl) {
   EXPECT_EQ(4U, stats_store_.counter("auth.clientssl.vpn.update_failure").value());
 }
 
-} // ClientSsl
-} // Auth
-} // Filter
+} // namespace ClientSsl
+} // namespace Auth
+} // namespace Filter
+} // namespace Envoy

@@ -9,6 +9,7 @@
 
 #include "envoy/common/pure.h"
 
+namespace Envoy {
 namespace Http {
 
 /**
@@ -39,13 +40,13 @@ private:
 /**
  * This is a string implementation for use in header processing. It is heavily optimized for
  * performance. It supports 3 different types of storage and can switch between them:
- * 1) A static reference.
+ * 1) A reference.
  * 2) Interned string.
  * 3) Heap allocated storage.
  */
 class HeaderString {
 public:
-  enum class Type { Inline, Static, Dynamic };
+  enum class Type { Inline, Reference, Dynamic };
 
   /**
    * Default constructor. Sets up for inline storage.
@@ -53,23 +54,25 @@ public:
   HeaderString();
 
   /**
-   * Constructor for a static string reference.
-   * @param static_value MUST point to static data.
+   * Constructor for a string reference.
+   * @param ref_value MUST point to data that will live beyond the lifetime of any request/response
+   *        using the string (since a codec may optimize for zero copy).
    */
-  explicit HeaderString(const LowerCaseString& static_value);
+  explicit HeaderString(const LowerCaseString& ref_value);
 
   /**
-   * Constructor for a static string reference.
-   * @param static_value MUST point to static data.
+   * Constructor for a string reference.
+   * @param ref_value MUST point to data that will live beyond the lifetime of any request/response
+   *        using the string (since a codec may optimize for zero copy).
    */
-  explicit HeaderString(const std::string& static_value);
+  explicit HeaderString(const std::string& ref_value);
 
   HeaderString(HeaderString&& move_value);
   ~HeaderString();
 
   /**
-   * Append data to an existing string. If the string is a static string the static data is not
-   * copied.
+   * Append data to an existing string. If the string is a reference string the reference data is
+   * not copied.
    */
   void append(const char* data, uint32_t size);
 
@@ -81,10 +84,10 @@ public:
   /**
    * @return a null terminated C string.
    */
-  const char* c_str() const { return buffer_.static_; }
+  const char* c_str() const { return buffer_.ref_; }
 
   /**
-   * Return the string to a default state. Static strings are not touched. Both inline/dynamic
+   * Return the string to a default state. Reference strings are not touched. Both inline/dynamic
    * strings are reset to zero size.
    */
   void clear();
@@ -110,6 +113,13 @@ public:
   void setInteger(uint64_t value);
 
   /**
+   * Set the value of the string to a string reference.
+   * @param ref_value MUST point to data that will live beyond the lifetime of any request/response
+   *        using the string (since a codec may optimize for zero copy).
+   */
+  void setReference(const std::string& ref_value);
+
+  /**
    * @return the size of the string, not including the null terminator.
    */
   uint32_t size() const { return string_length_; }
@@ -125,13 +135,15 @@ public:
 private:
   union {
     char* dynamic_;
-    const char* static_;
+    const char* ref_;
   } buffer_;
 
   union {
     char inline_buffer_[128];
     uint32_t dynamic_capacity_;
   };
+
+  void freeDynamic();
 
   uint32_t string_length_;
   Type type_;
@@ -189,6 +201,14 @@ private:
  * O(1) access to these headers without even a hash lookup.
  */
 #define ALL_INLINE_HEADERS(HEADER_FUNC)                                                            \
+  HEADER_FUNC(AccessControlRequestHeaders)                                                         \
+  HEADER_FUNC(AccessControlRequestMethod)                                                          \
+  HEADER_FUNC(AccessControlAllowOrigin)                                                            \
+  HEADER_FUNC(AccessControlAllowHeaders)                                                           \
+  HEADER_FUNC(AccessControlAllowMethods)                                                           \
+  HEADER_FUNC(AccessControlAllowCredentials)                                                       \
+  HEADER_FUNC(AccessControlExposeHeaders)                                                          \
+  HEADER_FUNC(AccessControlMaxAge)                                                                 \
   HEADER_FUNC(Authorization)                                                                       \
   HEADER_FUNC(ClientTraceId)                                                                       \
   HEADER_FUNC(Connection)                                                                          \
@@ -196,13 +216,16 @@ private:
   HEADER_FUNC(ContentType)                                                                         \
   HEADER_FUNC(Date)                                                                                \
   HEADER_FUNC(EnvoyDownstreamServiceCluster)                                                       \
+  HEADER_FUNC(EnvoyDownstreamServiceNode)                                                          \
   HEADER_FUNC(EnvoyExpectedRequestTimeoutMs)                                                       \
   HEADER_FUNC(EnvoyExternalAddress)                                                                \
   HEADER_FUNC(EnvoyForceTrace)                                                                     \
+  HEADER_FUNC(EnvoyImmediateHealthCheckFail)                                                       \
   HEADER_FUNC(EnvoyInternalRequest)                                                                \
   HEADER_FUNC(EnvoyMaxRetries)                                                                     \
   HEADER_FUNC(EnvoyOriginalPath)                                                                   \
   HEADER_FUNC(EnvoyRetryOn)                                                                        \
+  HEADER_FUNC(EnvoyRetryGrpcOn)                                                                    \
   HEADER_FUNC(EnvoyUpstreamAltStatName)                                                            \
   HEADER_FUNC(EnvoyUpstreamCanary)                                                                 \
   HEADER_FUNC(EnvoyUpstreamHealthCheckedCluster)                                                   \
@@ -211,13 +234,16 @@ private:
   HEADER_FUNC(EnvoyUpstreamRequestTimeoutMs)                                                       \
   HEADER_FUNC(EnvoyUpstreamServiceTime)                                                            \
   HEADER_FUNC(Expect)                                                                              \
+  HEADER_FUNC(ForwardedClientCert)                                                                 \
   HEADER_FUNC(ForwardedFor)                                                                        \
   HEADER_FUNC(ForwardedProto)                                                                      \
+  HEADER_FUNC(GrpcAcceptEncoding)                                                                  \
   HEADER_FUNC(GrpcMessage)                                                                         \
   HEADER_FUNC(GrpcStatus)                                                                          \
   HEADER_FUNC(Host)                                                                                \
   HEADER_FUNC(KeepAlive)                                                                           \
   HEADER_FUNC(Method)                                                                              \
+  HEADER_FUNC(Origin)                                                                              \
   HEADER_FUNC(OtSpanContext)                                                                       \
   HEADER_FUNC(Path)                                                                                \
   HEADER_FUNC(ProxyConnection)                                                                     \
@@ -225,9 +251,15 @@ private:
   HEADER_FUNC(Scheme)                                                                              \
   HEADER_FUNC(Server)                                                                              \
   HEADER_FUNC(Status)                                                                              \
+  HEADER_FUNC(TE)                                                                                  \
   HEADER_FUNC(TransferEncoding)                                                                    \
   HEADER_FUNC(Upgrade)                                                                             \
-  HEADER_FUNC(UserAgent)
+  HEADER_FUNC(UserAgent)                                                                           \
+  HEADER_FUNC(XB3TraceId)                                                                          \
+  HEADER_FUNC(XB3SpanId)                                                                           \
+  HEADER_FUNC(XB3ParentSpanId)                                                                     \
+  HEADER_FUNC(XB3Sampled)                                                                          \
+  HEADER_FUNC(XB3Flags)
 
 /**
  * The following functions are defined for each inline header above. E.g., for ContentLength we
@@ -253,22 +285,65 @@ public:
   ALL_INLINE_HEADERS(DEFINE_INLINE_HEADER)
 
   /**
-   * Add a fully static header to the map. Both key and value MUST point to fully static data.
-   * Nothing will be copied.
+   * Add a reference header to the map. Both key and value MUST point to data that will live beyond
+   * the lifetime of any request/response using the string (since a codec may optimize for zero
+   * copy). Nothing will be copied.
+   *
+   * Calling addReference multiple times for the same header will result in multiple headers being
+   * present in the HeaderMap.
+   *
+   * @param key specifies the name of the header to add; it WILL NOT be copied.
+   * @param value specifies the value of the header to add; it WILL NOT be copied.
    */
-  virtual void addStatic(const LowerCaseString& key, const std::string& value) PURE;
+  virtual void addReference(const LowerCaseString& key, const std::string& value) PURE;
 
   /**
-   * Add a header with a static key to the map. The key MUST point to fully static data. The value
-   * will be copied.
+   * Add a header with a reference key to the map. The key MUST point to data that will live beyond
+   * the lifetime of any request/response using the string (since a codec may optimize for zero
+   * copy). The value will be copied.
+   *
+   * Calling addReferenceKey multiple times for the same header will result in multiple headers
+   * being present in the HeaderMap.
+   *
+   * @param key specifies the name of the header to add; it WILL NOT be copied.
+   * @param value specifies the value of the header to add; it WILL be copied.
    */
-  virtual void addStaticKey(const LowerCaseString& key, uint64_t value) PURE;
+  virtual void addReferenceKey(const LowerCaseString& key, uint64_t value) PURE;
 
   /**
-   * Add a header with a static key to the map. The key MUST point to fully static data. The value
-   * will be copied.
+   * Add a header with a reference key to the map. The key MUST point to point to data that will
+   * live beyond the lifetime of any request/response using the string (since a codec may optimize
+   * for zero copy). The value will be copied.
+   *
+   * Calling addReferenceKey multiple times for the same header will result in multiple headers
+   * being present in the HeaderMap.
+   *
+   * @param key specifies the name of the header to add; it WILL NOT be copied.
+   * @param value specifies the value of the header to add; it WILL be copied.
    */
-  virtual void addStaticKey(const LowerCaseString& key, const std::string& value) PURE;
+  virtual void addReferenceKey(const LowerCaseString& key, const std::string& value) PURE;
+
+  /**
+   * Add a header by copying both the header key and the value.
+   *
+   * Calling addCopy multiple times for the same header will result in multiple headers being
+   * present in the HeaderMap.
+   *
+   * @param key specifies the name of the header to add; it WILL be copied.
+   * @param value specifies the value of the header to add; it WILL be copied.
+   */
+  virtual void addCopy(const LowerCaseString& key, uint64_t value) PURE;
+
+  /**
+   * Add a header by copying both the header key and the value.
+   *
+   * Calling addCopy multiple times for the same header will result in multiple headers being
+   * present in the HeaderMap.
+   *
+   * @param key specifies the name of the header to add; it WILL be copied.
+   * @param value specifies the value of the header to add; it WILL be copied.
+   */
+  virtual void addCopy(const LowerCaseString& key, const std::string& value) PURE;
 
   /**
    * @return uint64_t the approximate size of the header map in bytes.
@@ -310,4 +385,5 @@ public:
 
 typedef std::unique_ptr<HeaderMap> HeaderMapPtr;
 
-} // Http
+} // namespace Http
+} // namespace Envoy

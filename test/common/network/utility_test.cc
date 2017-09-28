@@ -4,114 +4,18 @@
 
 #include "envoy/common/exception.h"
 
-#include "common/json/json_loader.h"
+#include "common/common/thread.h"
 #include "common/network/address_impl.h"
 #include "common/network/utility.h"
 
+#include "test/test_common/environment.h"
+#include "test/test_common/network_utility.h"
+#include "test/test_common/utility.h"
+
 #include "gtest/gtest.h"
 
+namespace Envoy {
 namespace Network {
-
-TEST(IpListTest, Errors) {
-  {
-    std::string json = R"EOF(
-    {
-      "ip_white_list": ["foo"]
-    }
-    )EOF";
-
-    Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
-  }
-
-  {
-    std::string json = R"EOF(
-    {
-      "ip_white_list": ["foo/bar"]
-    }
-    )EOF";
-
-    Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
-  }
-
-  {
-    std::string json = R"EOF(
-    {
-      "ip_white_list": ["192.168.1.1/33"]
-    }
-    )EOF";
-
-    Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
-  }
-
-  {
-    std::string json = R"EOF(
-    {
-      "ip_white_list": ["192.168.1.1/24"]
-    }
-    )EOF";
-
-    Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
-  }
-}
-
-TEST(IpListTest, Normal) {
-  std::string json = R"EOF(
-  {
-    "ip_white_list": [
-      "192.168.3.0/24",
-      "50.1.2.3/32",
-      "10.15.0.0/16"
-     ]
-  }
-  )EOF";
-
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-  IpList wl(*loader, "ip_white_list");
-
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.0")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.3")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.255")));
-  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("192.168.2.255")));
-  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("192.168.4.0")));
-
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("50.1.2.3")));
-  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("50.1.2.2")));
-  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("50.1.2.4")));
-
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("10.15.0.0")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("10.15.90.90")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("10.15.255.255")));
-  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("10.14.255.255")));
-  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("10.16.0.0")));
-
-  EXPECT_FALSE(wl.contains(Address::PipeInstance("foo")));
-}
-
-TEST(IpListTest, MatchAny) {
-  std::string json = R"EOF(
-  {
-    "ip_white_list": [
-      "0.0.0.0/0"
-     ]
-  }
-  )EOF";
-
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-  IpList wl(*loader, "ip_white_list");
-
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.3")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.0")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.255")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.0.0")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.0.0.0")));
-  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("1.1.1.1")));
-
-  EXPECT_FALSE(wl.contains(Address::PipeInstance("foo")));
-}
 
 TEST(NetworkUtility, Url) {
   EXPECT_EQ("foo", Utility::hostFromTcpUrl("tcp://foo:1234"));
@@ -124,14 +28,149 @@ TEST(NetworkUtility, Url) {
   EXPECT_THROW(Utility::portFromTcpUrl("tcp://foo"), EnvoyException);
   EXPECT_THROW(Utility::portFromTcpUrl("tcp://foo:bar"), EnvoyException);
   EXPECT_THROW(Utility::hostFromTcpUrl(""), EnvoyException);
-  EXPECT_THROW(Utility::resolveUrl("foo"), EnvoyException);
 }
 
-TEST(NetworkUtility, getLocalAddress) { EXPECT_NE(nullptr, Utility::getLocalAddress()); }
+TEST(NetworkUtility, resolveUrl) {
+  EXPECT_THROW(Utility::resolveUrl("foo"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("abc://foo"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://1.2.3.4:1234/"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://127.0.0.1:8001/"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://127.0.0.1:0/foo"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://127.0.0.1:"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://192.168.3.3"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://192.168.3.3.3:0"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://192.168.3:0"), EnvoyException);
 
-TEST(NetworkUtility, getOriginalDst) { EXPECT_EQ(nullptr, Utility::getOriginalDst(-1)); }
+  EXPECT_THROW(Utility::resolveUrl("tcp://[::1]"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://[:::1]:1"), EnvoyException);
+  EXPECT_THROW(Utility::resolveUrl("tcp://foo:0"), EnvoyException);
 
-TEST(NetworkUtility, loopbackAddress) {
+  EXPECT_EQ("", Utility::resolveUrl("unix://")->asString());
+  EXPECT_EQ("foo", Utility::resolveUrl("unix://foo")->asString());
+  EXPECT_EQ("tmp", Utility::resolveUrl("unix://tmp")->asString());
+  EXPECT_EQ("tmp/server", Utility::resolveUrl("unix://tmp/server")->asString());
+
+  EXPECT_EQ("1.2.3.4:1234", Utility::resolveUrl("tcp://1.2.3.4:1234")->asString());
+  EXPECT_EQ("0.0.0.0:0", Utility::resolveUrl("tcp://0.0.0.0:0")->asString());
+  EXPECT_EQ("127.0.0.1:0", Utility::resolveUrl("tcp://127.0.0.1:0")->asString());
+
+  EXPECT_EQ("[::1]:1", Utility::resolveUrl("tcp://[::1]:1")->asString());
+  EXPECT_EQ("[::]:0", Utility::resolveUrl("tcp://[::]:0")->asString());
+  EXPECT_EQ("[1::2:3]:4", Utility::resolveUrl("tcp://[1::2:3]:4")->asString());
+  EXPECT_EQ("[a::1]:0", Utility::resolveUrl("tcp://[a::1]:0")->asString());
+  EXPECT_EQ("[a:b:c:d::]:0", Utility::resolveUrl("tcp://[a:b:c:d::]:0")->asString());
+}
+
+TEST(NetworkUtility, ParseInternetAddress) {
+  EXPECT_THROW(Utility::parseInternetAddress(""), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("1.2.3"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("1.2.3.4.5"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("1.2.3.256"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("foo"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("0:0:0:0"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("fffff::"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("/foo"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("[::]"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddress("[::1]:1"), EnvoyException);
+
+  EXPECT_EQ("1.2.3.4:0", Utility::parseInternetAddress("1.2.3.4")->asString());
+  EXPECT_EQ("0.0.0.0:0", Utility::parseInternetAddress("0.0.0.0")->asString());
+  EXPECT_EQ("127.0.0.1:0", Utility::parseInternetAddress("127.0.0.1")->asString());
+
+  EXPECT_EQ("[::1]:0", Utility::parseInternetAddress("::1")->asString());
+  EXPECT_EQ("[::]:0", Utility::parseInternetAddress("::")->asString());
+  EXPECT_EQ("[1::2:3]:0", Utility::parseInternetAddress("1::2:3")->asString());
+  EXPECT_EQ("[a::1]:0", Utility::parseInternetAddress("a::1")->asString());
+  EXPECT_EQ("[a:b:c:d::]:0", Utility::parseInternetAddress("a:b:c:d::")->asString());
+}
+
+TEST(NetworkUtility, ParseInternetAddressAndPort) {
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("1.2.3.4"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("1.2.3.4:"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("1.2.3.4::1"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("1.2.3.4:-1"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort(":1"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort(" :1"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("1.2.3:1"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("1.2.3.4]:2"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("1.2.3.4:65536"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("1.2.3.4:8008/"), EnvoyException);
+
+  EXPECT_EQ("0.0.0.0:0", Utility::parseInternetAddressAndPort("0.0.0.0:0")->asString());
+  EXPECT_EQ("255.255.255.255:65535",
+            Utility::parseInternetAddressAndPort("255.255.255.255:65535")->asString());
+  EXPECT_EQ("127.0.0.1:0", Utility::parseInternetAddressAndPort("127.0.0.1:0")->asString());
+
+  EXPECT_THROW(Utility::parseInternetAddressAndPort(""), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("::1"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("::"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("[[::]]:1"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("[::]:1]:2"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("]:[::1]:2"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("[1.2.3.4:0"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("[1.2.3.4]:0"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("[::]:"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("[::]:-1"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("[::]:bogus"), EnvoyException);
+  EXPECT_THROW(Utility::parseInternetAddressAndPort("[1::1]:65536"), EnvoyException);
+
+  EXPECT_EQ("[::]:0", Utility::parseInternetAddressAndPort("[::]:0")->asString());
+  EXPECT_EQ("[1::1]:65535", Utility::parseInternetAddressAndPort("[1::1]:65535")->asString());
+  EXPECT_EQ("[::1]:0", Utility::parseInternetAddressAndPort("[::1]:0")->asString());
+}
+
+TEST(NetworkUtility, FromProtoAddress) {
+  envoy::api::v2::Address ipv4_address;
+  ipv4_address.mutable_socket_address()->set_address("1.2.3.4");
+  ipv4_address.mutable_socket_address()->set_port_value(5);
+  EXPECT_EQ("1.2.3.4:5", Utility::fromProtoAddress(ipv4_address)->asString());
+
+  envoy::api::v2::Address ipv6_address;
+  ipv4_address.mutable_socket_address()->set_address("1::1");
+  ipv4_address.mutable_socket_address()->set_port_value(2);
+  EXPECT_EQ("[1::1]:2", Utility::fromProtoAddress(ipv4_address)->asString());
+
+  envoy::api::v2::Address pipe_address;
+  pipe_address.mutable_pipe()->set_path("/foo/bar");
+  EXPECT_EQ("/foo/bar", Utility::fromProtoAddress(pipe_address)->asString());
+}
+
+class NetworkUtilityGetLocalAddress : public testing::TestWithParam<Address::IpVersion> {};
+
+INSTANTIATE_TEST_CASE_P(IpVersions, NetworkUtilityGetLocalAddress,
+                        testing::ValuesIn(TestEnvironment::getIpVersionsForTest()));
+
+TEST_P(NetworkUtilityGetLocalAddress, GetLocalAddress) {
+  EXPECT_NE(nullptr, Utility::getLocalAddress(GetParam()));
+}
+
+TEST(NetworkUtility, GetOriginalDst) { EXPECT_EQ(nullptr, Utility::getOriginalDst(-1)); }
+
+TEST(NetworkUtility, InternalAddress) {
+  EXPECT_TRUE(Utility::isInternalAddress("127.0.0.1"));
+  EXPECT_TRUE(Utility::isInternalAddress("10.0.0.1"));
+  EXPECT_TRUE(Utility::isInternalAddress("192.168.0.0"));
+  EXPECT_TRUE(Utility::isInternalAddress("172.16.0.0"));
+  EXPECT_TRUE(Utility::isInternalAddress("172.30.2.1"));
+  EXPECT_FALSE(Utility::isInternalAddress(""));
+  EXPECT_FALSE(Utility::isInternalAddress("127"));
+  EXPECT_FALSE(Utility::isInternalAddress("192.167.0.0"));
+  EXPECT_FALSE(Utility::isInternalAddress("172.32.0.0"));
+  EXPECT_FALSE(Utility::isInternalAddress("11.0.0.1"));
+
+  EXPECT_TRUE(Utility::isInternalAddress("fd00::"));
+  EXPECT_TRUE(Utility::isInternalAddress("::1"));
+  EXPECT_TRUE(Utility::isInternalAddress("fdff::"));
+  EXPECT_TRUE(Utility::isInternalAddress("fd01::"));
+  EXPECT_TRUE(Utility::isInternalAddress("fd12:3456:7890:1234:5678:9012:3456:7890"));
+  EXPECT_FALSE(Utility::isInternalAddress("fd::"));
+  EXPECT_FALSE(Utility::isInternalAddress("::"));
+  EXPECT_FALSE(Utility::isInternalAddress("fc00::"));
+  EXPECT_FALSE(Utility::isInternalAddress("fe00::"));
+  EXPECT_FALSE(Utility::isInternalAddress("fd00:::"));
+}
+
+TEST(NetworkUtility, LoopbackAddress) {
   {
     Address::Ipv4Instance address("127.0.0.1");
     EXPECT_TRUE(Utility::isLoopbackAddress(address));
@@ -142,6 +181,14 @@ TEST(NetworkUtility, loopbackAddress) {
   }
   {
     Address::PipeInstance address("/foo");
+    EXPECT_FALSE(Utility::isLoopbackAddress(address));
+  }
+  {
+    Address::Ipv6Instance address("::1");
+    EXPECT_TRUE(Utility::isLoopbackAddress(address));
+  }
+  {
+    Address::Ipv6Instance address("::");
     EXPECT_FALSE(Utility::isLoopbackAddress(address));
   }
   EXPECT_EQ("127.0.0.1:0", Utility::getCanonicalIpv4LoopbackAddress()->asString());
@@ -242,4 +289,5 @@ TEST(PortRangeListTest, Normal) {
   }
 }
 
-} // Network
+} // namespace Network
+} // namespace Envoy

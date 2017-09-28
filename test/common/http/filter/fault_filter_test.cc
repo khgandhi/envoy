@@ -21,18 +21,34 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::DoAll;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
 using testing::WithArgs;
+using testing::_;
 
+namespace Envoy {
 namespace Http {
 
 class FaultFilterTest : public testing::Test {
 public:
+  const std::string fixed_delay_and_abort_nodes_json = R"EOF(
+    {
+      "delay" : {
+        "type" : "fixed",
+        "fixed_delay_percent" : 100,
+        "fixed_duration_ms" : 5000
+      },
+      "abort" : {
+        "abort_percent" : 100,
+        "http_status" : 503
+      },
+      "downstream_nodes": ["canary"]
+    }
+    )EOF";
+
   const std::string fixed_delay_only_json = R"EOF(
     {
       "delay" : {
@@ -96,8 +112,8 @@ public:
     )EOF";
 
   void SetUpTest(const std::string json) {
-    Json::ObjectPtr config = Json::Factory::loadFromString(json);
-    config_.reset(new FaultFilterConfig(*config, runtime_, "", stats_));
+    Json::ObjectSharedPtr config = Json::Factory::loadFromString(json);
+    config_.reset(new FaultFilterConfig(*config, runtime_, "prefix.", stats_));
     filter_.reset(new FaultFilter(config_));
     filter_->setDecoderFilterCallbacks(filter_callbacks_);
   }
@@ -118,16 +134,20 @@ public:
   Event::MockTimer* timer_{};
 };
 
+void faultFilterBadConfigHelper(const std::string& json) {
+  Stats::IsolatedStoreImpl stats;
+  Json::ObjectSharedPtr config = Json::Factory::loadFromString(json);
+  NiceMock<Runtime::MockLoader> runtime;
+  EXPECT_THROW(FaultFilterConfig(*config, runtime, "", stats), EnvoyException);
+}
+
 TEST(FaultFilterBadConfigTest, EmptyConfig) {
   const std::string json = R"EOF(
   {
   }
   )EOF";
 
-  Stats::IsolatedStoreImpl stats;
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
-  NiceMock<Runtime::MockLoader> runtime;
-  EXPECT_THROW(FaultFilterConfig(*config, runtime, "", stats), EnvoyException);
+  faultFilterBadConfigHelper(json);
 }
 
 TEST(FaultFilterBadConfigTest, BadAbortPercent) {
@@ -140,10 +160,21 @@ TEST(FaultFilterBadConfigTest, BadAbortPercent) {
     }
   )EOF";
 
-  Stats::IsolatedStoreImpl stats;
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
-  NiceMock<Runtime::MockLoader> runtime;
-  EXPECT_THROW(FaultFilterConfig(*config, runtime, "", stats), EnvoyException);
+  faultFilterBadConfigHelper(json);
+}
+
+TEST(FaultFilterBadConfigTest, EmptyDownstreamNodes) {
+  const std::string json = R"EOF(
+    {
+      "abort" : {
+        "abort_percent" : 80,
+        "http_status" : 503
+      },
+      "downstream_nodes": []
+    }
+  )EOF";
+
+  faultFilterBadConfigHelper(json);
 }
 
 TEST(FaultFilterBadConfigTest, MissingHTTPStatus) {
@@ -155,10 +186,7 @@ TEST(FaultFilterBadConfigTest, MissingHTTPStatus) {
     }
   )EOF";
 
-  Stats::IsolatedStoreImpl stats;
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
-  NiceMock<Runtime::MockLoader> runtime;
-  EXPECT_THROW(FaultFilterConfig(*config, runtime, "", stats), EnvoyException);
+  faultFilterBadConfigHelper(json);
 }
 
 TEST(FaultFilterBadConfigTest, BadDelayType) {
@@ -172,10 +200,7 @@ TEST(FaultFilterBadConfigTest, BadDelayType) {
     }
   )EOF";
 
-  Stats::IsolatedStoreImpl stats;
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
-  NiceMock<Runtime::MockLoader> runtime;
-  EXPECT_THROW(FaultFilterConfig(*config, runtime, "", stats), EnvoyException);
+  faultFilterBadConfigHelper(json);
 }
 
 TEST(FaultFilterBadConfigTest, BadDelayPercent) {
@@ -189,10 +214,7 @@ TEST(FaultFilterBadConfigTest, BadDelayPercent) {
     }
   )EOF";
 
-  Stats::IsolatedStoreImpl stats;
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
-  NiceMock<Runtime::MockLoader> runtime;
-  EXPECT_THROW(FaultFilterConfig(*config, runtime, "", stats), EnvoyException);
+  faultFilterBadConfigHelper(json);
 }
 
 TEST(FaultFilterBadConfigTest, BadDelayDuration) {
@@ -206,10 +228,7 @@ TEST(FaultFilterBadConfigTest, BadDelayDuration) {
     }
    )EOF";
 
-  Stats::IsolatedStoreImpl stats;
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
-  NiceMock<Runtime::MockLoader> runtime;
-  EXPECT_THROW(FaultFilterConfig(*config, runtime, "", stats), EnvoyException);
+  faultFilterBadConfigHelper(json);
 }
 
 TEST(FaultFilterBadConfigTest, MissingDelayDuration) {
@@ -222,10 +241,7 @@ TEST(FaultFilterBadConfigTest, MissingDelayDuration) {
     }
    )EOF";
 
-  Stats::IsolatedStoreImpl stats;
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
-  NiceMock<Runtime::MockLoader> runtime;
-  EXPECT_THROW(FaultFilterConfig(*config, runtime, "", stats), EnvoyException);
+  faultFilterBadConfigHelper(json);
 }
 
 TEST_F(FaultFilterTest, AbortWithHttpStatus) {
@@ -238,7 +254,8 @@ TEST_F(FaultFilterTest, AbortWithHttpStatus) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.delay.fixed_duration_ms", _)).Times(0);
   EXPECT_CALL(filter_callbacks_, continueDecoding()).Times(0);
   EXPECT_CALL(filter_callbacks_.request_info_,
-              setResponseFlag(Http::AccessLog::ResponseFlag::DelayInjected)).Times(0);
+              setResponseFlag(Http::AccessLog::ResponseFlag::DelayInjected))
+      .Times(0);
 
   // Abort related calls
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.abort.abort_percent", 100))
@@ -247,8 +264,10 @@ TEST_F(FaultFilterTest, AbortWithHttpStatus) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", 429))
       .WillOnce(Return(429));
 
-  Http::TestHeaderMapImpl response_headers{{":status", "429"}};
-  EXPECT_CALL(filter_callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), true));
+  Http::TestHeaderMapImpl response_headers{
+      {":status", "429"}, {"content-length", "18"}, {"content-type", "text/plain"}};
+  EXPECT_CALL(filter_callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), false));
+  EXPECT_CALL(filter_callbacks_, encodeData(_, true));
 
   EXPECT_CALL(filter_callbacks_.request_info_,
               setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected));
@@ -315,15 +334,119 @@ TEST_F(FaultFilterTest, FixedDelayNonZeroDuration) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", _)).Times(0);
   EXPECT_CALL(filter_callbacks_, encodeHeaders_(_, _)).Times(0);
   EXPECT_CALL(filter_callbacks_.request_info_,
-              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected)).Times(0);
+              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected))
+      .Times(0);
   EXPECT_CALL(filter_callbacks_, continueDecoding());
+
+  EXPECT_EQ(FilterDataStatus::StopIterationAndWatermark, filter_->decodeData(data_, false));
+  EXPECT_EQ(FilterTrailersStatus::StopIteration, filter_->decodeTrailers(request_headers_));
+  timer_->callback_();
+
+  EXPECT_EQ(1UL, config_->stats().delays_injected_.value());
+  EXPECT_EQ(0UL, config_->stats().aborts_injected_.value());
+}
+
+TEST_F(FaultFilterTest, DelayForDownstreamCluster) {
+  SetUpTest(fixed_delay_only_json);
+
+  request_headers_.addCopy("x-envoy-downstream-service-cluster", "cluster");
+
+  // Delay related calls.
+  EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.delay.fixed_delay_percent", 100))
+      .WillOnce(Return(false));
+  EXPECT_CALL(runtime_.snapshot_,
+              featureEnabled("fault.http.cluster.delay.fixed_delay_percent", 100))
+      .WillOnce(Return(true));
+
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.delay.fixed_duration_ms", 5000))
+      .WillOnce(Return(125UL));
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.cluster.delay.fixed_duration_ms", 125UL))
+      .WillOnce(Return(500UL));
+  expectDelayTimer(500UL);
+  EXPECT_CALL(filter_callbacks_.request_info_,
+              setResponseFlag(Http::AccessLog::ResponseFlag::DelayInjected));
+
+  EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
+
+  // Abort related calls.
+  EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.abort.abort_percent", 0))
+      .WillOnce(Return(false));
+  EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.cluster.abort.abort_percent", 0))
+      .WillOnce(Return(false));
+
+  // Delay only case, no aborts.
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.cluster.abort.http_status", _)).Times(0);
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", _)).Times(0);
+  EXPECT_CALL(filter_callbacks_, encodeHeaders_(_, _)).Times(0);
+  EXPECT_CALL(filter_callbacks_.request_info_,
+              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected))
+      .Times(0);
+  EXPECT_CALL(filter_callbacks_, continueDecoding());
+  EXPECT_EQ(FilterDataStatus::StopIterationAndWatermark, filter_->decodeData(data_, false));
+
+  timer_->callback_();
+
+  EXPECT_EQ(FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers_));
+
+  EXPECT_EQ(1UL, config_->stats().delays_injected_.value());
+  EXPECT_EQ(0UL, config_->stats().aborts_injected_.value());
+  EXPECT_EQ(1UL, stats_.counter("prefix.fault.cluster.delays_injected").value());
+  EXPECT_EQ(0UL, stats_.counter("prefix.fault.cluster.aborts_injected").value());
+}
+
+TEST_F(FaultFilterTest, FixedDelayAndAbortDownstream) {
+  SetUpTest(fixed_delay_and_abort_json);
+
+  request_headers_.addCopy("x-envoy-downstream-service-cluster", "cluster");
+
+  // Delay related calls.
+  EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.delay.fixed_delay_percent", 100))
+      .WillOnce(Return(false));
+  EXPECT_CALL(runtime_.snapshot_,
+              featureEnabled("fault.http.cluster.delay.fixed_delay_percent", 100))
+      .WillOnce(Return(true));
+
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.delay.fixed_duration_ms", 5000))
+      .WillOnce(Return(125UL));
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.cluster.delay.fixed_duration_ms", 125UL))
+      .WillOnce(Return(500UL));
+  expectDelayTimer(500UL);
+
+  EXPECT_CALL(filter_callbacks_.request_info_,
+              setResponseFlag(Http::AccessLog::ResponseFlag::DelayInjected));
+
+  EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
+
+  // Abort related calls
+  EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.abort.abort_percent", 100))
+      .WillOnce(Return(false));
+  EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.cluster.abort.abort_percent", 100))
+      .WillOnce(Return(true));
+
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", 503))
+      .WillOnce(Return(503));
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.cluster.abort.http_status", 503))
+      .WillOnce(Return(500));
+
+  Http::TestHeaderMapImpl response_headers{
+      {":status", "500"}, {"content-length", "18"}, {"content-type", "text/plain"}};
+  EXPECT_CALL(filter_callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), false));
+  EXPECT_CALL(filter_callbacks_, encodeData(_, true));
+
+  EXPECT_CALL(filter_callbacks_.request_info_,
+              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected));
+
+  EXPECT_CALL(filter_callbacks_, continueDecoding()).Times(0);
+
   timer_->callback_();
 
   EXPECT_EQ(FilterDataStatus::Continue, filter_->decodeData(data_, false));
   EXPECT_EQ(FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers_));
 
   EXPECT_EQ(1UL, config_->stats().delays_injected_.value());
-  EXPECT_EQ(0UL, config_->stats().aborts_injected_.value());
+  EXPECT_EQ(1UL, config_->stats().aborts_injected_.value());
+  EXPECT_EQ(1UL, stats_.counter("prefix.fault.cluster.delays_injected").value());
+  EXPECT_EQ(1UL, stats_.counter("prefix.fault.cluster.aborts_injected").value());
 }
 
 TEST_F(FaultFilterTest, FixedDelayAndAbort) {
@@ -351,8 +474,10 @@ TEST_F(FaultFilterTest, FixedDelayAndAbort) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", 503))
       .WillOnce(Return(503));
 
-  Http::TestHeaderMapImpl response_headers{{":status", "503"}};
-  EXPECT_CALL(filter_callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), true));
+  Http::TestHeaderMapImpl response_headers{
+      {":status", "503"}, {"content-length", "18"}, {"content-type", "text/plain"}};
+  EXPECT_CALL(filter_callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), false));
+  EXPECT_CALL(filter_callbacks_, encodeData(_, true));
 
   EXPECT_CALL(filter_callbacks_.request_info_,
               setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected));
@@ -368,10 +493,54 @@ TEST_F(FaultFilterTest, FixedDelayAndAbort) {
   EXPECT_EQ(1UL, config_->stats().aborts_injected_.value());
 }
 
+TEST_F(FaultFilterTest, FixedDelayAndAbortDownstreamNodes) {
+  SetUpTest(fixed_delay_and_abort_nodes_json);
+
+  // Delay related calls.
+  EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.delay.fixed_delay_percent", 100))
+      .WillOnce(Return(true));
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.delay.fixed_duration_ms", 5000))
+      .WillOnce(Return(5000UL));
+
+  expectDelayTimer(5000UL);
+
+  EXPECT_CALL(filter_callbacks_.request_info_,
+              setResponseFlag(Http::AccessLog::ResponseFlag::DelayInjected));
+
+  request_headers_.addCopy("x-envoy-downstream-service-node", "canary");
+  EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
+
+  // Abort related calls.
+  EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.abort.abort_percent", 100))
+      .WillOnce(Return(true));
+  EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", 503))
+      .WillOnce(Return(503));
+
+  Http::TestHeaderMapImpl response_headers{
+      {":status", "503"}, {"content-length", "18"}, {"content-type", "text/plain"}};
+  EXPECT_CALL(filter_callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), false));
+  EXPECT_CALL(filter_callbacks_, encodeData(_, true));
+
+  EXPECT_CALL(filter_callbacks_.request_info_,
+              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected));
+
+  EXPECT_CALL(filter_callbacks_, continueDecoding()).Times(0);
+
+  timer_->callback_();
+
+  EXPECT_EQ(FilterDataStatus::Continue, filter_->decodeData(data_, false));
+  EXPECT_EQ(FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers_));
+
+  request_headers_.removeEnvoyDownstreamServiceNode();
+  EXPECT_EQ(FilterHeadersStatus::Continue, filter_->decodeHeaders(request_headers_, true));
+  EXPECT_EQ(1UL, config_->stats().delays_injected_.value());
+  EXPECT_EQ(1UL, config_->stats().aborts_injected_.value());
+}
+
 TEST_F(FaultFilterTest, FixedDelayAndAbortHeaderMatchSuccess) {
   SetUpTest(fixed_delay_and_abort_match_headers_json);
-  request_headers_.addViaCopy("x-foo1", "Bar");
-  request_headers_.addViaCopy("x-foo2", "RandomValue");
+  request_headers_.addCopy("x-foo1", "Bar");
+  request_headers_.addCopy("x-foo2", "RandomValue");
 
   // Delay related calls
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.delay.fixed_delay_percent", 100))
@@ -395,8 +564,10 @@ TEST_F(FaultFilterTest, FixedDelayAndAbortHeaderMatchSuccess) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", 503))
       .WillOnce(Return(503));
 
-  Http::TestHeaderMapImpl response_headers{{":status", "503"}};
-  EXPECT_CALL(filter_callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), true));
+  Http::TestHeaderMapImpl response_headers{
+      {":status", "503"}, {"content-length", "18"}, {"content-type", "text/plain"}};
+  EXPECT_CALL(filter_callbacks_, encodeHeaders_(HeaderMapEqualRef(&response_headers), false));
+  EXPECT_CALL(filter_callbacks_, encodeData(_, true));
   EXPECT_CALL(filter_callbacks_.request_info_,
               setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected));
 
@@ -413,8 +584,8 @@ TEST_F(FaultFilterTest, FixedDelayAndAbortHeaderMatchSuccess) {
 
 TEST_F(FaultFilterTest, FixedDelayAndAbortHeaderMatchFail) {
   SetUpTest(fixed_delay_and_abort_match_headers_json);
-  request_headers_.addViaCopy("x-foo1", "Bar");
-  request_headers_.addViaCopy("x-foo3", "Baz");
+  request_headers_.addCopy("x-foo1", "Bar");
+  request_headers_.addCopy("x-foo3", "Baz");
 
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("fault.http.delay.fixed_delay_percent", _))
       .Times(0);
@@ -452,8 +623,8 @@ TEST_F(FaultFilterTest, TimerResetAfterStreamReset) {
               setResponseFlag(Http::AccessLog::ResponseFlag::DelayInjected));
 
   EXPECT_EQ(0UL, config_->stats().delays_injected_.value());
-
   EXPECT_EQ(FilterHeadersStatus::StopIteration, filter_->decodeHeaders(request_headers_, false));
+  EXPECT_EQ(1UL, config_->stats().delays_injected_.value());
 
   // delay timer should have been fired by now. If caller resets the stream while we are waiting
   // on the delay timer, check if timers are cancelled
@@ -464,13 +635,14 @@ TEST_F(FaultFilterTest, TimerResetAfterStreamReset) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", _)).Times(0);
   EXPECT_CALL(filter_callbacks_, encodeHeaders_(_, _)).Times(0);
   EXPECT_CALL(filter_callbacks_.request_info_,
-              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected)).Times(0);
+              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected))
+      .Times(0);
   EXPECT_CALL(filter_callbacks_, continueDecoding()).Times(0);
   EXPECT_EQ(0UL, config_->stats().aborts_injected_.value());
 
-  EXPECT_EQ(FilterDataStatus::Continue, filter_->decodeData(data_, true));
+  EXPECT_EQ(FilterDataStatus::StopIterationAndWatermark, filter_->decodeData(data_, true));
 
-  filter_callbacks_.reset_callback_();
+  filter_->onDestroy();
 }
 
 TEST_F(FaultFilterTest, FaultWithTargetClusterMatchSuccess) {
@@ -502,7 +674,8 @@ TEST_F(FaultFilterTest, FaultWithTargetClusterMatchSuccess) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("fault.http.abort.http_status", _)).Times(0);
   EXPECT_CALL(filter_callbacks_, encodeHeaders_(_, _)).Times(0);
   EXPECT_CALL(filter_callbacks_.request_info_,
-              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected)).Times(0);
+              setResponseFlag(Http::AccessLog::ResponseFlag::FaultInjected))
+      .Times(0);
   EXPECT_CALL(filter_callbacks_, continueDecoding());
   timer_->callback_();
 
@@ -558,4 +731,5 @@ TEST_F(FaultFilterTest, FaultWithTargetClusterNullRoute) {
   EXPECT_EQ(0UL, config_->stats().aborts_injected_.value());
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

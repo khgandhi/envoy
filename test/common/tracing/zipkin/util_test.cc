@@ -2,6 +2,7 @@
 
 #include "gtest/gtest.h"
 
+namespace Envoy {
 namespace Zipkin {
 
 TEST(ZipkinUtilTest, utilTests) {
@@ -37,4 +38,5 @@ TEST(ZipkinUtilTest, utilTests) {
                   "\"val1\"}},\"array_field\":[],\"second_array\":[{\"a1\":10},{\"a2\":\"10\"}]}";
   EXPECT_EQ(expected_json, merged_json);
 }
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

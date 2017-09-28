@@ -16,12 +16,15 @@
 #include "common/network/utility.h"
 #include "common/upstream/upstream_impl.h"
 
+#include "test/common/upstream/utility.h"
 #include "test/mocks/upstream/mocks.h"
+#include "test/test_common/network_utility.h"
 #include "test/test_common/printers.h"
 #include "test/test_common/utility.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 void BufferingStreamDecoder::decodeHeaders(Http::HeaderMapPtr&& headers, bool end_stream) {
   ASSERT(!complete_);
   complete_ = end_stream;
@@ -52,16 +55,19 @@ void BufferingStreamDecoder::onResetStream(Http::StreamResetReason) { ADD_FAILUR
 BufferingStreamDecoderPtr
 IntegrationUtil::makeSingleRequest(uint32_t port, const std::string& method, const std::string& url,
                                    const std::string& body, Http::CodecClient::Type type,
-                                   const std::string& host) {
+                                   Network::Address::IpVersion version, const std::string& host) {
   Api::Impl api(std::chrono::milliseconds(9000));
   Event::DispatcherPtr dispatcher(api.allocateDispatcher());
   std::shared_ptr<Upstream::MockClusterInfo> cluster{new NiceMock<Upstream::MockClusterInfo>()};
-  Upstream::HostDescriptionConstSharedPtr host_description{new Upstream::HostDescriptionImpl(
-      cluster, "", Network::Utility::resolveUrl("tcp://127.0.0.1:80"), false, "")};
-  Http::CodecClientProd client(type,
-                               dispatcher->createClientConnection(Network::Utility::resolveUrl(
-                                   fmt::format("tcp://127.0.0.1:{}", port))),
-                               host_description);
+  Upstream::HostDescriptionConstSharedPtr host_description{Upstream::makeTestHostDescription(
+      cluster, fmt::format("tcp://{}:80", Network::Test::getLoopbackAddressUrlString(version)))};
+  Http::CodecClientProd client(
+      type,
+      dispatcher->createClientConnection(
+          Network::Utility::resolveUrl(fmt::format(
+              "tcp://{}:{}", Network::Test::getLoopbackAddressUrlString(version), port)),
+          Network::Address::InstanceConstSharedPtr()),
+      host_description);
   BufferingStreamDecoderPtr response(new BufferingStreamDecoder([&]() -> void { client.close(); }));
   Http::StreamEncoder& encoder = client.newStream(*response);
   encoder.getStream().addCallbacks(*response);
@@ -82,11 +88,14 @@ IntegrationUtil::makeSingleRequest(uint32_t port, const std::string& method, con
 }
 
 RawConnectionDriver::RawConnectionDriver(uint32_t port, Buffer::Instance& initial_data,
-                                         ReadCallback data_callback) {
+                                         ReadCallback data_callback,
+                                         Network::Address::IpVersion version) {
   api_.reset(new Api::Impl(std::chrono::milliseconds(10000)));
   dispatcher_ = api_->allocateDispatcher();
   client_ = dispatcher_->createClientConnection(
-      Network::Utility::resolveUrl(fmt::format("tcp://127.0.0.1:{}", port)));
+      Network::Utility::resolveUrl(
+          fmt::format("tcp://{}:{}", Network::Test::getLoopbackAddressUrlString(version), port)),
+      Network::Address::InstanceConstSharedPtr());
   client_->addReadFilter(Network::ReadFilterSharedPtr{new ForwardingFilter(*this, data_callback)});
   client_->write(initial_data);
   client_->connect();
@@ -97,3 +106,19 @@ RawConnectionDriver::~RawConnectionDriver() {}
 void RawConnectionDriver::run() { dispatcher_->run(Event::Dispatcher::RunType::Block); }
 
 void RawConnectionDriver::close() { client_->close(Network::ConnectionCloseType::FlushWrite); }
+
+WaitForPayloadReader::WaitForPayloadReader(Event::Dispatcher& dispatcher)
+    : dispatcher_(dispatcher) {}
+
+Network::FilterStatus WaitForPayloadReader::onData(Buffer::Instance& data) {
+  data_.append(TestUtility::bufferToString(data));
+  data.drain(data.length());
+  if (!data_to_wait_for_.empty() && data_.find(data_to_wait_for_) == 0) {
+    data_to_wait_for_.clear();
+    dispatcher_.exit();
+  }
+
+  return Network::FilterStatus::StopIteration;
+}
+
+} // namespace Envoy

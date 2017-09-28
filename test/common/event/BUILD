@@ -26,5 +26,19 @@ envoy_cc_test(
         "//source/common/event:dispatcher_includes",
         "//source/common/event:dispatcher_lib",
         "//test/mocks:common_lib",
+        "//test/test_common:environment_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "dispatched_thread_impl_test",
+    srcs = ["dispatched_thread_impl_test.cc"],
+    deps = [
+        "//source/common/common:utility_lib",
+        "//source/common/event:dispatched_thread_lib",
+        "//source/server:guarddog_lib",
+        "//test/mocks:common_lib",
+        "//test/mocks/server:server_mocks",
+        "//test/mocks/stats:stats_mocks",
     ],
 )

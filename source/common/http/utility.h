@@ -8,6 +8,9 @@
 
 #include "common/json/json_loader.h"
 
+#include "api/protocol.pb.h"
+
+namespace Envoy {
 namespace Http {
 
 /**
@@ -39,6 +42,14 @@ public:
   static QueryParams parseQueryString(const std::string& url);
 
   /**
+   * Finds the start of the query string in a path
+   * @param path supplies a HeaderString& to search for the query string
+   * @return const char* a pointer to the beginning of the query string, or the end of the
+   *         path if there is no query
+   */
+  static const char* findQueryStringStart(const HeaderString& path);
+
+  /**
    * Parse a particular value out of a cookie
    * @param headers supplies the headers to get the cookie from.
    * @param key the key for the particular cookie value to return
@@ -63,20 +74,52 @@ public:
   static bool isInternalRequest(const HeaderMap& headers);
 
   /**
-   * @return uint64_t parse a "http_codec_options" JSON field and turn it into a bitmask of
-   *         CodecOption values.
+   * Determine whether this is a WebSocket Upgrade request.
+   * This function returns true if the following HTTP headers and values are present:
+   * - Connection: Upgrade
+   * - Upgrade: websocket
    */
-  static uint64_t parseCodecOptions(const Json::Object& config);
+  static bool isWebSocketUpgradeRequest(const HeaderMap& headers);
+
+  /**
+   * @return Http2Settings An Http2Settings populated from the envoy::api::v2::Http2ProtocolOptions
+   *         config.
+   */
+  static Http2Settings parseHttp2Settings(const envoy::api::v2::Http2ProtocolOptions& config);
+
+  /**
+   * @return Http1Settings An Http1Settings populated from the envoy::api::v2::Http1ProtocolOptions
+   *         config.
+   */
+  static Http1Settings parseHttp1Settings(const envoy::api::v2::Http1ProtocolOptions& config);
 
   /**
    * Create a locally generated response using filter callbacks.
    * @param callbacks supplies the filter callbacks to use.
+   * @param is_reset boolean reference that indicates whether a stream has been reset. It is the
+   *                 responsibility of the caller to ensure that this is set to false if onDestroy()
+   *                 is invoked in the context of sendLocalReply().
    * @param response_code supplies the HTTP response code.
    * @param body_text supplies the optional body text which is sent using the text/plain content
    *                  type.
    */
-  static void sendLocalReply(StreamDecoderFilterCallbacks& callbacks, Code response_code,
-                             const std::string& body_text);
+  static void sendLocalReply(StreamDecoderFilterCallbacks& callbacks, const bool& is_reset,
+                             Code response_code, const std::string& body_text);
+  /**
+   * Create a locally generated response using the provided lambdas.
+   * @param encode_headers supplies the function to encode response headers.
+   * @param encode_data supplies the function to encode the response body.
+   * @param is_reset boolean reference that indicates whether a stream has been reset. It is the
+   *                 responsibility of the caller to ensure that this is set to false if onDestroy()
+   *                 is invoked in the context of sendLocalReply().
+   * @param response_code supplies the HTTP response code.
+   * @param body_text supplies the optional body text which is sent using the text/plain content
+   *                  type.
+   */
+  static void
+  sendLocalReply(std::function<void(HeaderMapPtr&& headers, bool end_stream)> encode_headers,
+                 std::function<void(Buffer::Instance& data, bool end_stream)> encode_data,
+                 const bool& is_reset, Code response_code, const std::string& body_text);
 
   /**
    * Send a redirect response (301).
@@ -93,4 +136,5 @@ public:
   static std::string getLastAddressFromXFF(const Http::HeaderMap& request_headers);
 };
 
-} // Http
+} // namespace Http
+} // namespace Envoy

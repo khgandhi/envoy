@@ -11,41 +11,41 @@
 #include "common/common/assert.h"
 #include "common/common/utility.h"
 #include "common/http/codes.h"
+#include "common/protobuf/utility.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 namespace Upstream {
 namespace Outlier {
 
-DetectorSharedPtr DetectorImplFactory::createForCluster(Cluster& cluster,
-                                                        const Json::Object& cluster_config,
-                                                        Event::Dispatcher& dispatcher,
-                                                        Runtime::Loader& runtime,
-                                                        EventLoggerSharedPtr event_logger) {
-  if (cluster_config.hasObject("outlier_detection")) {
-    return DetectorImpl::create(cluster, *cluster_config.getObject("outlier_detection"), dispatcher,
-                                runtime, ProdMonotonicTimeSource::instance_, event_logger);
+DetectorSharedPtr DetectorImplFactory::createForCluster(
+    Cluster& cluster, const envoy::api::v2::Cluster& cluster_config, Event::Dispatcher& dispatcher,
+    Runtime::Loader& runtime, EventLoggerSharedPtr event_logger) {
+  if (cluster_config.has_outlier_detection()) {
+    return DetectorImpl::create(cluster, cluster_config.outlier_detection(), dispatcher, runtime,
+                                ProdMonotonicTimeSource::instance_, event_logger);
   } else {
     return nullptr;
   }
 }
 
-void DetectorHostSinkImpl::eject(MonotonicTime ejection_time) {
+void DetectorHostMonitorImpl::eject(MonotonicTime ejection_time) {
   ASSERT(!host_.lock()->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK));
   host_.lock()->healthFlagSet(Host::HealthFlag::FAILED_OUTLIER_CHECK);
   num_ejections_++;
   last_ejection_time_.value(ejection_time);
 }
 
-void DetectorHostSinkImpl::uneject(MonotonicTime unejection_time) {
+void DetectorHostMonitorImpl::uneject(MonotonicTime unejection_time) {
   last_unejection_time_.value(unejection_time);
 }
 
-void DetectorHostSinkImpl::updateCurrentSuccessRateBucket() {
+void DetectorHostMonitorImpl::updateCurrentSuccessRateBucket() {
   success_rate_accumulator_bucket_.store(success_rate_accumulator_.updateCurrentWriter());
 }
 
-void DetectorHostSinkImpl::putHttpResponseCode(uint64_t response_code) {
+void DetectorHostMonitorImpl::putHttpResponseCode(uint64_t response_code) {
   success_rate_accumulator_bucket_.load()->total_request_counter_++;
   if (Http::CodeUtility::is5xx(response_code)) {
     std::shared_ptr<DetectorImpl> detector = detector_.lock();
@@ -65,35 +65,37 @@ void DetectorHostSinkImpl::putHttpResponseCode(uint64_t response_code) {
   }
 }
 
-DetectorConfig::DetectorConfig(const Json::Object& json_config)
-    : interval_ms_(static_cast<uint64_t>(json_config.getInteger("interval_ms", 10000))),
+DetectorConfig::DetectorConfig(const envoy::api::v2::Cluster::OutlierDetection& config)
+    : interval_ms_(static_cast<uint64_t>(PROTOBUF_GET_MS_OR_DEFAULT(config, interval, 10000))),
       base_ejection_time_ms_(
-          static_cast<uint64_t>(json_config.getInteger("base_ejection_time_ms", 30000))),
-      consecutive_5xx_(static_cast<uint64_t>(json_config.getInteger("consecutive_5xx", 5))),
+          static_cast<uint64_t>(PROTOBUF_GET_MS_OR_DEFAULT(config, base_ejection_time, 30000))),
+      consecutive_5xx_(
+          static_cast<uint64_t>(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, consecutive_5xx, 5))),
       max_ejection_percent_(
-          static_cast<uint64_t>(json_config.getInteger("max_ejection_percent", 10))),
-      success_rate_minimum_hosts_(
-          static_cast<uint64_t>(json_config.getInteger("success_rate_minimum_hosts", 5))),
-      success_rate_request_volume_(
-          static_cast<uint64_t>(json_config.getInteger("success_rate_request_volume", 100))),
-      success_rate_stdev_factor_(
-          static_cast<uint64_t>(json_config.getInteger("success_rate_stdev_factor", 1900))),
-      enforcing_consecutive_5xx_(
-          static_cast<uint64_t>(json_config.getInteger("enforcing_consecutive_5xx", 100))),
-      enforcing_success_rate_(
-          static_cast<uint64_t>(json_config.getInteger("enforcing_success_rate", 100))) {}
+          static_cast<uint64_t>(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, max_ejection_percent, 10))),
+      success_rate_minimum_hosts_(static_cast<uint64_t>(
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, success_rate_minimum_hosts, 5))),
+      success_rate_request_volume_(static_cast<uint64_t>(
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, success_rate_request_volume, 100))),
+      success_rate_stdev_factor_(static_cast<uint64_t>(
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, success_rate_stdev_factor, 1900))),
+      enforcing_consecutive_5xx_(static_cast<uint64_t>(
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, enforcing_consecutive_5xx, 100))),
+      enforcing_success_rate_(static_cast<uint64_t>(
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, enforcing_success_rate, 100))) {}
 
-DetectorImpl::DetectorImpl(const Cluster& cluster, const Json::Object& json_config,
+DetectorImpl::DetectorImpl(const Cluster& cluster,
+                           const envoy::api::v2::Cluster::OutlierDetection& config,
                            Event::Dispatcher& dispatcher, Runtime::Loader& runtime,
                            MonotonicTimeSource& time_source, EventLoggerSharedPtr event_logger)
-    : config_(json_config), dispatcher_(dispatcher), runtime_(runtime), time_source_(time_source),
+    : config_(config), dispatcher_(dispatcher), runtime_(runtime), time_source_(time_source),
       stats_(generateStats(cluster.info()->statsScope())),
       interval_timer_(dispatcher.createTimer([this]() -> void { onIntervalTimer(); })),
       event_logger_(event_logger), success_rate_average_(-1), success_rate_ejection_threshold_(-1) {
 }
 
 DetectorImpl::~DetectorImpl() {
-  for (auto host : host_sinks_) {
+  for (auto host : host_monitors_) {
     if (host.first->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK)) {
       ASSERT(stats_.ejections_active_.value() > 0);
       stats_.ejections_active_.dec();
@@ -102,45 +104,46 @@ DetectorImpl::~DetectorImpl() {
 }
 
 std::shared_ptr<DetectorImpl>
-DetectorImpl::create(const Cluster& cluster, const Json::Object& json_config,
+DetectorImpl::create(const Cluster& cluster,
+                     const envoy::api::v2::Cluster::OutlierDetection& config,
                      Event::Dispatcher& dispatcher, Runtime::Loader& runtime,
                      MonotonicTimeSource& time_source, EventLoggerSharedPtr event_logger) {
   std::shared_ptr<DetectorImpl> detector(
-      new DetectorImpl(cluster, json_config, dispatcher, runtime, time_source, event_logger));
+      new DetectorImpl(cluster, config, dispatcher, runtime, time_source, event_logger));
   detector->initialize(cluster);
   return detector;
 }
 
 void DetectorImpl::initialize(const Cluster& cluster) {
-  for (HostSharedPtr host : cluster.hosts()) {
-    addHostSink(host);
+  for (const HostSharedPtr& host : cluster.hosts()) {
+    addHostMonitor(host);
   }
 
   cluster.addMemberUpdateCb([this](const std::vector<HostSharedPtr>& hosts_added,
                                    const std::vector<HostSharedPtr>& hosts_removed) -> void {
-    for (HostSharedPtr host : hosts_added) {
-      addHostSink(host);
+    for (const HostSharedPtr& host : hosts_added) {
+      addHostMonitor(host);
     }
 
-    for (HostSharedPtr host : hosts_removed) {
-      ASSERT(host_sinks_.count(host) == 1);
+    for (const HostSharedPtr& host : hosts_removed) {
+      ASSERT(host_monitors_.count(host) == 1);
       if (host->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK)) {
         ASSERT(stats_.ejections_active_.value() > 0);
         stats_.ejections_active_.dec();
       }
 
-      host_sinks_.erase(host);
+      host_monitors_.erase(host);
     }
   });
 
   armIntervalTimer();
 }
 
-void DetectorImpl::addHostSink(HostSharedPtr host) {
-  ASSERT(host_sinks_.count(host) == 0);
-  DetectorHostSinkImpl* sink = new DetectorHostSinkImpl(shared_from_this(), host);
-  host_sinks_[host] = sink;
-  host->setOutlierDetector(DetectorHostSinkPtr{sink});
+void DetectorImpl::addHostMonitor(HostSharedPtr host) {
+  ASSERT(host_monitors_.count(host) == 0);
+  DetectorHostMonitorImpl* monitor = new DetectorHostMonitorImpl(shared_from_this(), host);
+  host_monitors_[host] = monitor;
+  host->setOutlierDetector(DetectorHostMonitorPtr{monitor});
 }
 
 void DetectorImpl::armIntervalTimer() {
@@ -148,7 +151,7 @@ void DetectorImpl::armIntervalTimer() {
       runtime_.snapshot().getInteger("outlier_detection.interval_ms", config_.intervalMs())));
 }
 
-void DetectorImpl::checkHostForUneject(HostSharedPtr host, DetectorHostSinkImpl* sink,
+void DetectorImpl::checkHostForUneject(HostSharedPtr host, DetectorHostMonitorImpl* monitor,
                                        MonotonicTime now) {
   if (!host->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK)) {
     return;
@@ -157,11 +160,11 @@ void DetectorImpl::checkHostForUneject(HostSharedPtr host, DetectorHostSinkImpl*
   std::chrono::milliseconds base_eject_time =
       std::chrono::milliseconds(runtime_.snapshot().getInteger(
           "outlier_detection.base_ejection_time_ms", config_.baseEjectionTimeMs()));
-  ASSERT(sink->numEjections() > 0)
-  if ((base_eject_time * sink->numEjections()) <= (now - sink->lastEjectionTime().value())) {
+  ASSERT(monitor->numEjections() > 0)
+  if ((base_eject_time * monitor->numEjections()) <= (now - monitor->lastEjectionTime().value())) {
     stats_.ejections_active_.dec();
     host->healthFlagClear(Host::HealthFlag::FAILED_OUTLIER_CHECK);
-    sink->uneject(now);
+    monitor->uneject(now);
     runCallbacks(host);
 
     if (event_logger_) {
@@ -187,12 +190,12 @@ void DetectorImpl::ejectHost(HostSharedPtr host, EjectionType type) {
   uint64_t max_ejection_percent = std::min<uint64_t>(
       100, runtime_.snapshot().getInteger("outlier_detection.max_ejection_percent",
                                           config_.maxEjectionPercent()));
-  double ejected_percent = 100.0 * stats_.ejections_active_.value() / host_sinks_.size();
+  double ejected_percent = 100.0 * stats_.ejections_active_.value() / host_monitors_.size();
   if (ejected_percent < max_ejection_percent) {
     stats_.ejections_total_.inc();
     if (enforceEjection(type)) {
       stats_.ejections_active_.inc();
-      host_sinks_[host]->eject(time_source_.currentTime());
+      host_monitors_[host]->eject(time_source_.currentTime());
       runCallbacks(host);
 
       if (event_logger_) {
@@ -237,7 +240,7 @@ void DetectorImpl::onConsecutive5xx(HostSharedPtr host) {
 void DetectorImpl::onConsecutive5xxWorker(HostSharedPtr host) {
   // This comes in cross thread. There is a chance that the host has already been removed from
   // the set. If so, just ignore it.
-  if (host_sinks_.count(host) == 0) {
+  if (host_monitors_.count(host) == 0) {
     return;
   }
 
@@ -247,6 +250,12 @@ void DetectorImpl::onConsecutive5xxWorker(HostSharedPtr host) {
 
   stats_.ejections_consecutive_5xx_.inc();
   ejectHost(host, EjectionType::Consecutive5xx);
+
+  // Reset the DetectorHostMonitor's consecutive_5xx_ counter. The reset is performed here
+  // on the onConsecutive5xxWorker call to prevent thread thrashing. The consecutive_5xx_
+  // counter needs to be reset in order to allow the monitor to detect a bout of consecutive
+  // 5xx responses even if the monitor is not charged with an interleaved non-5xx code.
+  host_monitors_[host]->resetConsecutive5xx();
 }
 
 Utility::EjectionPair Utility::successRateEjectionThreshold(
@@ -292,14 +301,14 @@ void DetectorImpl::processSuccessRateEjections() {
   success_rate_ejection_threshold_ = -1;
 
   // Exit early if there are not enough hosts.
-  if (host_sinks_.size() < success_rate_minimum_hosts) {
+  if (host_monitors_.size() < success_rate_minimum_hosts) {
     return;
   }
 
   // reserve upper bound of vector size to avoid reallocation.
-  valid_success_rate_hosts.reserve(host_sinks_.size());
+  valid_success_rate_hosts.reserve(host_monitors_.size());
 
-  for (const auto& host : host_sinks_) {
+  for (const auto& host : host_monitors_) {
     // Don't do work if the host is already ejected.
     if (!host.first->healthFlagGet(Host::HealthFlag::FAILED_OUTLIER_CHECK)) {
       Optional<double> host_success_rate =
@@ -335,7 +344,7 @@ void DetectorImpl::processSuccessRateEjections() {
 void DetectorImpl::onIntervalTimer() {
   MonotonicTime now = time_source_.currentTime();
 
-  for (auto host : host_sinks_) {
+  for (auto host : host_monitors_) {
     checkHostForUneject(host.first, host.second, now);
 
     // Need to update the writer bucket to keep the data valid.
@@ -351,7 +360,7 @@ void DetectorImpl::onIntervalTimer() {
 }
 
 void DetectorImpl::runCallbacks(HostSharedPtr host) {
-  for (ChangeStateCb cb : callbacks_) {
+  for (const ChangeStateCb& cb : callbacks_) {
     cb(host);
   }
 }
@@ -468,5 +477,6 @@ Optional<double> SuccessRateAccumulator::getSuccessRate(uint64_t success_rate_re
                           backup_success_rate_bucket_->total_request_counter_);
 }
 
-} // Outlier
-} // Upstream
+} // namespace Outlier
+} // namespace Upstream
+} // namespace Envoy

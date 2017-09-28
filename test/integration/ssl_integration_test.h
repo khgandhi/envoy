@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "test/integration/integration.h"
+#include "test/integration/http_integration.h"
 #include "test/integration/server.h"
 #include "test/mocks/runtime/mocks.h"
 
@@ -12,54 +12,32 @@
 
 using testing::NiceMock;
 
+namespace Envoy {
 namespace Ssl {
 
-class MockRuntimeIntegrationTestServer : public IntegrationTestServer {
+class SslIntegrationTest : public HttpIntegrationTest,
+                           public testing::TestWithParam<Network::Address::IpVersion> {
 public:
-  static IntegrationTestServerPtr create(const std::string& config_path) {
-    IntegrationTestServerPtr server{new MockRuntimeIntegrationTestServer(config_path)};
-    server->start();
-    return server;
-  }
+  SslIntegrationTest() : HttpIntegrationTest(Http::CodecClient::Type::HTTP1, GetParam()) {}
 
-  // Server::ComponentFactory
-  Runtime::LoaderPtr createRuntime(Server::Instance&, Server::Configuration::Initial&) override {
-    runtime_ = new NiceMock<Runtime::MockLoader>();
-    return Runtime::LoaderPtr{runtime_};
-  }
+  void initialize() override;
 
-  Runtime::MockLoader* runtime_;
+  void TearDown() override;
 
-private:
-  MockRuntimeIntegrationTestServer(const std::string& config_path)
-      : IntegrationTestServer(config_path) {}
-};
-
-class SslIntegrationTest : public BaseIntegrationTest, public testing::Test {
-public:
-  /**
-   * Global initializer for all integration tests.
-   */
-  static void SetUpTestCase();
-
-  /**
-   * Global destructor for all integration tests.
-   */
-  static void TearDownTestCase();
-
+  Network::ClientConnectionPtr makeSslConn() { return makeSslClientConnection(false, false); }
   Network::ClientConnectionPtr makeSslClientConnection(bool alpn, bool san);
-  static ServerContextPtr createUpstreamSslContext();
-  static ClientContextPtr createClientSslContext(bool alpn, bool san);
+  ServerContextPtr createUpstreamSslContext();
   void checkStats();
 
 private:
-  static std::unique_ptr<Runtime::Loader> runtime_;
-  static std::unique_ptr<ContextManager> context_manager_;
-  static ServerContextPtr upstream_ssl_ctx_;
-  static ClientContextPtr client_ssl_ctx_plain_;
-  static ClientContextPtr client_ssl_ctx_alpn_;
-  static ClientContextPtr client_ssl_ctx_san_;
-  static ClientContextPtr client_ssl_ctx_alpn_san_;
+  std::unique_ptr<Runtime::Loader> runtime_;
+  std::unique_ptr<ContextManager> context_manager_;
+  ServerContextPtr upstream_ssl_ctx_;
+  ClientContextPtr client_ssl_ctx_plain_;
+  ClientContextPtr client_ssl_ctx_alpn_;
+  ClientContextPtr client_ssl_ctx_san_;
+  ClientContextPtr client_ssl_ctx_alpn_san_;
 };
 
-} // Ssl
+} // namespace Ssl
+} // namespace Envoy

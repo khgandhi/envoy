@@ -9,6 +9,7 @@
 
 #include "common/ssl/context_impl.h"
 
+namespace Envoy {
 namespace Network {
 
 class ListenSocketImpl : public ListenSocket {
@@ -49,4 +50,5 @@ public:
   UdsListenSocket(const std::string& uds_path);
 };
 
-} // Network
+} // namespace Network
+} // namespace Envoy

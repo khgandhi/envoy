@@ -7,12 +7,18 @@
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace Runtime {
 
 class MockRandomGenerator : public RandomGenerator {
 public:
+  MockRandomGenerator();
+  ~MockRandomGenerator();
+
   MOCK_METHOD0(random, uint64_t());
   MOCK_METHOD0(uuid, std::string());
+
+  const std::string uuid_{"a121e9e1-feae-4136-9e0e-6fac343d56c9"};
 };
 
 class MockSnapshot : public Snapshot {
@@ -39,4 +45,5 @@ public:
   testing::NiceMock<MockSnapshot> snapshot_;
 };
 
-} // Runtime
+} // namespace Runtime
+} // namespace Envoy

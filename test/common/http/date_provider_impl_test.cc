@@ -12,6 +12,7 @@
 
 using testing::NiceMock;
 
+namespace Envoy {
 namespace Http {
 
 TEST(DateProviderImplTest, All) {
@@ -33,4 +34,5 @@ TEST(DateProviderImplTest, All) {
   EXPECT_NE(nullptr, headers.Date());
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

@@ -7,6 +7,7 @@ set -e
 [[ -z "${TESTLOGS_DIR}" ]] && TESTLOGS_DIR="${SRCDIR}/bazel-testlogs"
 [[ -z "${BAZEL_COVERAGE}" ]] && BAZEL_COVERAGE=bazel
 [[ -z "${GCOVR}" ]] && GCOVR=gcovr
+[[ -z "${WORKSPACE}" ]] && WORKSPACE=envoy
 
 # This is the target that will be run to generate coverage data. It can be overriden by consumer
 # projects that want to run coverage on a different/combined target.
@@ -23,6 +24,9 @@ do
 done
 echo "Cleanup completed."
 
+# Force dbg for path consistency later, don't include debug code in coverage.
+BAZEL_TEST_OPTIONS="${BAZEL_TEST_OPTIONS} -c dbg --copt=-DNDEBUG"
+
 # Run all tests under "bazel test", no sandbox. We're going to generate the
 # .gcda inplace in the bazel-out/ directory. This is in contrast to the "bazel
 # coverage" method, which is currently broken for C++ (see
@@ -38,12 +42,21 @@ echo "Cleanup completed."
 # stats. The #foo# pattern is because gcov produces files such as
 # bazel-out#local-fastbuild#bin#external#spdlog_git#_virtual_includes#spdlog#spdlog#details#pattern_formatter_impl.h.gcov.
 # To find these while modifying this regex, perform a gcov run with -k set.
-[[ -z "${GCOVR_EXCLUDE_REGEX}" ]] && GCOVR_EXCLUDE_REGEX=".*pb.h.gcov|.*#genfiles#.*|test#.*|external#.*|.*#external#.*|.*#prebuilt#.*"
+[[ -z "${GCOVR_EXCLUDE_REGEX}" ]] && GCOVR_EXCLUDE_REGEX=".*pb.h.gcov|.*#genfiles#.*|test#.*|external#.*|.*#external#.*|.*#prebuilt#.*|.*#config_validation#.*"
 [[ -z "${GCOVR_EXCLUDE_DIR}" ]] && GCOVR_EXCLUDE_DIR=".*/external/.*"
 
 COVERAGE_DIR="${SRCDIR}"/generated/coverage
 mkdir -p "${COVERAGE_DIR}"
 COVERAGE_SUMMARY="${COVERAGE_DIR}/coverage_summary.txt"
+
+# Copy .gcno objects into the same location that we find the .gcda.
+# TODO(htuch): Should use rsync, but there are some symlink loops to fight.
+pushd "${GCOVR_DIR}"
+for f in $(find -L bazel-out/ -name "*.gcno")
+do
+  cp --parents "$f" bazel-out/local-dbg/bin/test/coverage/coverage_tests.runfiles/"${WORKSPACE}"
+done
+popd
 
 # gcovr is extremely picky about where it is run and where the paths of the
 # original source are relative to its execution location.
@@ -53,6 +66,11 @@ time "${GCOVR}" --gcov-exclude="${GCOVR_EXCLUDE_REGEX}" \
   --exclude-directories="${GCOVR_EXCLUDE_DIR}" --object-directory="${GCOVR_DIR}" -r "${SRCDIR}" \
   --html --html-details --exclude-unreachable-branches --print-summary \
   -o "${COVERAGE_DIR}"/coverage.html > "${COVERAGE_SUMMARY}"
+
+# Clean up the generated test/coverage/BUILD file: subsequent bazel invocations
+# can choke on it if it references things that changed since the last coverage
+# run.
+rm "${SRCDIR}"/test/coverage/BUILD
 
 COVERAGE_VALUE=$(grep -Po 'lines: \K(\d|\.)*' "${COVERAGE_SUMMARY}")
 COVERAGE_THRESHOLD=98.0

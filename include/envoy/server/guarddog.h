@@ -4,6 +4,7 @@
 #include "envoy/server/watchdog.h"
 #include "envoy/stats/stats.h"
 
+namespace Envoy {
 namespace Server {
 
 /**
@@ -40,4 +41,5 @@ public:
   virtual void stopWatching(WatchDogSharedPtr wd) PURE;
 };
 
-} // Server
+} // namespace Server
+} // namespace Envoy

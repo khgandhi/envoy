@@ -11,6 +11,7 @@
 
 #include "envoy/network/address.h"
 
+namespace Envoy {
 namespace Network {
 namespace Address {
 
@@ -51,7 +52,7 @@ public:
 
 protected:
   InstanceBase(Type type) : type_(type) {}
-  int flagsFromSocketType(SocketType type) const;
+  int socketFromSocketType(SocketType type) const;
 
   std::string friendly_name_;
 
@@ -101,6 +102,11 @@ private:
   struct IpHelper : public Ip {
     const std::string& addressAsString() const override { return friendly_address_; }
     bool isAnyAddress() const override { return ipv4_.address_.sin_addr.s_addr == INADDR_ANY; }
+    bool isUnicastAddress() const override {
+      return !isAnyAddress() && (ipv4_.address_.sin_addr.s_addr != INADDR_BROADCAST) &&
+             // inlined IN_MULTICAST() to avoid byte swapping
+             !((ipv4_.address_.sin_addr.s_addr & htonl(0xf0000000)) == htonl(0xe0000000));
+    }
     const Ipv4* ipv4() const override { return &ipv4_; }
     const Ipv6* ipv6() const override { return nullptr; }
     uint32_t port() const override { return ntohs(ipv4_.address_.sin_port); }
@@ -160,6 +166,9 @@ private:
     bool isAnyAddress() const override {
       return 0 == memcmp(&ipv6_.address_.sin6_addr, &in6addr_any, sizeof(struct in6_addr));
     }
+    bool isUnicastAddress() const override {
+      return !isAnyAddress() && !IN6_IS_ADDR_MULTICAST(&ipv6_.address_.sin6_addr);
+    }
     const Ipv4* ipv4() const override { return nullptr; }
     const Ipv6* ipv6() const override { return &ipv6_; }
     uint32_t port() const override { return ipv6_.port(); }
@@ -171,23 +180,6 @@ private:
 
   IpHelper ip_;
 };
-
-/*
- * Parse an internet host address (IPv4 or IPv6) and create an Instance from it.
- * The address must not include a port number.
- * @param ip_addr string to be parsed as an internet address.
- * @return pointer to the Instance, or nullptr if unable to parse the address.
- */
-InstanceConstSharedPtr parseInternetAddress(const std::string& ip_addr);
-
-/*
- * Parse an internet host address (IPv4 or IPv6) AND port, and create an Instance from it.
- * @param ip_addr string to be parsed as an internet address and port. Examples:
- *        - "1.2.3.4:80"
- *        - "[1234:5678::9]:443"
- * @return pointer to the Instance, or nullptr if unable to parse the address.
- */
-InstanceConstSharedPtr parseInternetAddressAndPort(const std::string& ip_addr);
 
 /**
  * Implementation of a pipe address (unix domain socket on unix).
@@ -214,5 +206,6 @@ private:
   sockaddr_un address_;
 };
 
-} // Address
-} // Network
+} // namespace Address
+} // namespace Network
+} // namespace Envoy

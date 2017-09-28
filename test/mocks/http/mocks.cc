@@ -6,12 +6,13 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Invoke;
 using testing::Return;
 using testing::ReturnRef;
 using testing::SaveArg;
+using testing::_;
 
+namespace Envoy {
 namespace Http {
 
 MockConnectionManagerConfig::MockConnectionManagerConfig() {
@@ -33,20 +34,19 @@ MockStreamCallbacks::MockStreamCallbacks() {}
 MockStreamCallbacks::~MockStreamCallbacks() {}
 
 MockStream::MockStream() {
-  ON_CALL(*this, addCallbacks(_))
-      .WillByDefault(
-          Invoke([this](StreamCallbacks& callbacks) -> void { callbacks_.push_back(&callbacks); }));
+  ON_CALL(*this, addCallbacks(_)).WillByDefault(Invoke([this](StreamCallbacks& callbacks) -> void {
+    callbacks_.push_back(&callbacks);
+  }));
 
   ON_CALL(*this, removeCallbacks(_))
       .WillByDefault(
           Invoke([this](StreamCallbacks& callbacks) -> void { callbacks_.remove(&callbacks); }));
 
-  ON_CALL(*this, resetStream(_))
-      .WillByDefault(Invoke([this](StreamResetReason reason) -> void {
-        for (StreamCallbacks* callbacks : callbacks_) {
-          callbacks->onResetStream(reason);
-        }
-      }));
+  ON_CALL(*this, resetStream(_)).WillByDefault(Invoke([this](StreamResetReason reason) -> void {
+    for (StreamCallbacks* callbacks : callbacks_) {
+      callbacks->onResetStream(reason);
+    }
+  }));
 }
 
 MockStream::~MockStream() {}
@@ -71,8 +71,6 @@ MockFilterChainFactory::~MockFilterChainFactory() {}
 
 template <class T> static void initializeMockStreamFilterCallbacks(T& callbacks) {
   callbacks.route_.reset(new NiceMock<Router::MockRoute>());
-  ON_CALL(callbacks, addResetStreamCallback(_))
-      .WillByDefault(SaveArg<0>(&callbacks.reset_callback_));
   ON_CALL(callbacks, dispatcher()).WillByDefault(ReturnRef(callbacks.dispatcher_));
   ON_CALL(callbacks, requestInfo()).WillByDefault(ReturnRef(callbacks.request_info_));
   ON_CALL(callbacks, route()).WillByDefault(Return(callbacks.route_));
@@ -81,37 +79,60 @@ template <class T> static void initializeMockStreamFilterCallbacks(T& callbacks)
 
 MockStreamDecoderFilterCallbacks::MockStreamDecoderFilterCallbacks() {
   initializeMockStreamFilterCallbacks(*this);
-  ON_CALL(*this, decodingBuffer()).WillByDefault(ReturnRef(buffer_));
+  ON_CALL(*this, decodingBuffer()).WillByDefault(Return(buffer_.get()));
+
+  ON_CALL(*this, addDownstreamWatermarkCallbacks(_))
+      .WillByDefault(Invoke([this](DownstreamWatermarkCallbacks& callbacks) -> void {
+        callbacks_.push_back(&callbacks);
+      }));
+
+  ON_CALL(*this, removeDownstreamWatermarkCallbacks(_))
+      .WillByDefault(Invoke([this](DownstreamWatermarkCallbacks& callbacks) -> void {
+        callbacks_.remove(&callbacks);
+      }));
 }
 
 MockStreamDecoderFilterCallbacks::~MockStreamDecoderFilterCallbacks() {}
 
 MockStreamEncoderFilterCallbacks::MockStreamEncoderFilterCallbacks() {
   initializeMockStreamFilterCallbacks(*this);
-  ON_CALL(*this, encodingBuffer()).WillByDefault(ReturnRef(buffer_));
+  ON_CALL(*this, encodingBuffer()).WillByDefault(Return(buffer_.get()));
 }
 
 MockStreamEncoderFilterCallbacks::~MockStreamEncoderFilterCallbacks() {}
 
 MockStreamDecoderFilter::MockStreamDecoderFilter() {
   ON_CALL(*this, setDecoderFilterCallbacks(_))
-      .WillByDefault(Invoke([this](StreamDecoderFilterCallbacks& callbacks) -> void {
-        callbacks_ = &callbacks;
-        callbacks_->addResetStreamCallback([this]() -> void { reset_stream_called_.ready(); });
-      }));
+      .WillByDefault(Invoke(
+          [this](StreamDecoderFilterCallbacks& callbacks) -> void { callbacks_ = &callbacks; }));
 }
 
 MockStreamDecoderFilter::~MockStreamDecoderFilter() {}
 
 MockStreamEncoderFilter::MockStreamEncoderFilter() {
   ON_CALL(*this, setEncoderFilterCallbacks(_))
-      .WillByDefault(Invoke([this](StreamEncoderFilterCallbacks& callbacks)
-                                -> void { callbacks_ = &callbacks; }));
+      .WillByDefault(Invoke(
+          [this](StreamEncoderFilterCallbacks& callbacks) -> void { callbacks_ = &callbacks; }));
 }
 
 MockStreamEncoderFilter::~MockStreamEncoderFilter() {}
 
-MockAsyncClient::MockAsyncClient() {}
+MockStreamFilter::MockStreamFilter() {
+  ON_CALL(*this, setDecoderFilterCallbacks(_))
+      .WillByDefault(Invoke([this](StreamDecoderFilterCallbacks& callbacks) -> void {
+        decoder_callbacks_ = &callbacks;
+      }));
+  ON_CALL(*this, setEncoderFilterCallbacks(_))
+      .WillByDefault(Invoke([this](StreamEncoderFilterCallbacks& callbacks) -> void {
+        encoder_callbacks_ = &callbacks;
+      }));
+}
+
+MockStreamFilter::~MockStreamFilter() {}
+
+MockAsyncClient::MockAsyncClient() {
+  ON_CALL(*this, dispatcher()).WillByDefault(ReturnRef(dispatcher_));
+}
 MockAsyncClient::~MockAsyncClient() {}
 
 MockAsyncClientCallbacks::MockAsyncClientCallbacks() {}
@@ -123,10 +144,13 @@ MockAsyncClientStreamCallbacks::~MockAsyncClientStreamCallbacks() {}
 MockAsyncClientRequest::MockAsyncClientRequest(MockAsyncClient* client) : client_(client) {}
 MockAsyncClientRequest::~MockAsyncClientRequest() { client_->onRequestDestroy(); }
 
+MockAsyncClientStream::MockAsyncClientStream() {}
+MockAsyncClientStream::~MockAsyncClientStream() {}
+
 MockFilterChainFactoryCallbacks::MockFilterChainFactoryCallbacks() {}
 MockFilterChainFactoryCallbacks::~MockFilterChainFactoryCallbacks() {}
 
-} // Http
+} // namespace Http
 
 namespace Http {
 namespace ConnectionPool {
@@ -137,8 +161,8 @@ MockCancellable::~MockCancellable() {}
 MockInstance::MockInstance() {}
 MockInstance::~MockInstance() {}
 
-} // ConnectionPool
-} // Http
+} // namespace ConnectionPool
+} // namespace Http
 
 namespace Http {
 namespace AccessLog {
@@ -149,9 +173,12 @@ MockInstance::~MockInstance() {}
 MockRequestInfo::MockRequestInfo() {
   ON_CALL(*this, upstreamHost()).WillByDefault(Return(host_));
   ON_CALL(*this, startTime()).WillByDefault(Return(start_time_));
+  ON_CALL(*this, requestReceivedDuration()).WillByDefault(Return(request_received_duration_));
+  ON_CALL(*this, responseReceivedDuration()).WillByDefault(Return(response_received_duration_));
 }
 
 MockRequestInfo::~MockRequestInfo() {}
 
-} // AccessLog
-} // Http
+} // namespace AccessLog
+} // namespace Http
+} // namespace Envoy

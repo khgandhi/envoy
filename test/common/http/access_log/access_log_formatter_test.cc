@@ -15,11 +15,12 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
+using testing::_;
 
+namespace Envoy {
 namespace Http {
 namespace AccessLog {
 
@@ -92,6 +93,20 @@ TEST(AccessLogFormatterTest, requestInfoFormatter) {
   }
 
   {
+    RequestInfoFormatter request_duration_format("REQUEST_DURATION");
+    std::chrono::microseconds duration{5000};
+    EXPECT_CALL(request_info, requestReceivedDuration()).WillOnce(Return(duration));
+    EXPECT_EQ("5", request_duration_format.format(header, header, request_info));
+  }
+
+  {
+    RequestInfoFormatter response_duration_format("RESPONSE_DURATION");
+    std::chrono::microseconds duration{10000};
+    EXPECT_CALL(request_info, responseReceivedDuration()).WillRepeatedly(Return(duration));
+    EXPECT_EQ("10", response_duration_format.format(header, header, request_info));
+  }
+
+  {
     RequestInfoFormatter bytes_received_format("BYTES_RECEIVED");
     EXPECT_CALL(request_info, bytesReceived()).WillOnce(Return(1));
     EXPECT_EQ("1", bytes_received_format.format(header, header, request_info));
@@ -125,7 +140,7 @@ TEST(AccessLogFormatterTest, requestInfoFormatter) {
 
   {
     RequestInfoFormatter duration_format("DURATION");
-    std::chrono::milliseconds time{2};
+    std::chrono::microseconds time{2000};
     EXPECT_CALL(request_info, duration()).WillOnce(Return(time));
     EXPECT_EQ("2", duration_format.format(header, header, request_info));
   }
@@ -250,15 +265,28 @@ TEST(AccessLogFormatterTest, ParserFailures) {
   AccessLogFormatParser parser;
 
   std::vector<std::string> test_cases = {
-      "{{%PROTOCOL%}}   ++ %REQ(FIRST?SECOND)% %RESP(FIRST?SECOND)", "%REQ(FIRST?SECOND)T%",
-      "RESP(FIRST)%", "%REQ(valid)% %NOT_VALID%", "%REQ(FIRST?SECOND%", "%%", "%protocol%",
-      "%REQ(TEST):%", "%REQ(TEST):3q4%", "%RESP(TEST):%", "%RESP(X?Y):%", "%RESP(X?Y):343o24%",
-      "%REQ(TEST):10", "REQ(:TEST):10%", "%REQ(TEST:10%", "%REQ("};
+      "{{%PROTOCOL%}}   ++ %REQ(FIRST?SECOND)% %RESP(FIRST?SECOND)",
+      "%REQ(FIRST?SECOND)T%",
+      "RESP(FIRST)%",
+      "%REQ(valid)% %NOT_VALID%",
+      "%REQ(FIRST?SECOND%",
+      "%%",
+      "%protocol%",
+      "%REQ(TEST):%",
+      "%REQ(TEST):3q4%",
+      "%RESP(TEST):%",
+      "%RESP(X?Y):%",
+      "%RESP(X?Y):343o24%",
+      "%REQ(TEST):10",
+      "REQ(:TEST):10%",
+      "%REQ(TEST:10%",
+      "%REQ("};
 
   for (const std::string& test_case : test_cases) {
     EXPECT_THROW(parser.parse(test_case), EnvoyException);
   }
 }
 
-} // AccessLog
-} // Http
+} // namespace AccessLog
+} // namespace Http
+} // namespace Envoy

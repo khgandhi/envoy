@@ -30,7 +30,7 @@ Every cluster has a statistics tree rooted at *cluster.<name>.* with the followi
   upstream_cx_destroy_with_active_rq, Counter, Total connections destroyed with 1+ active request
   upstream_cx_destroy_local_with_active_rq, Counter, Total connections destroyed locally with 1+ active request
   upstream_cx_destroy_remote_with_active_rq, Counter, Total connections destroyed remotely with 1+ active request
-  upstream_cx_close_header, Counter, Total connections closed via HTTP/1.1 connection close header
+  upstream_cx_close_notify, Counter, Total connections closed via HTTP/1.1 connection close header or HTTP/2 GOAWAY
   upstream_cx_rx_bytes_total, Counter, Total received connection bytes
   upstream_cx_rx_bytes_buffered, Gauge, Received connection bytes currently buffered
   upstream_cx_tx_bytes_total, Counter, Total sent connection bytes
@@ -53,13 +53,19 @@ Every cluster has a statistics tree rooted at *cluster.<name>.* with the followi
   upstream_rq_retry, Counter, Total request retries
   upstream_rq_retry_success, Counter, Total request retry successes
   upstream_rq_retry_overflow, Counter, Total requests not retried due to circuit breaking
+  upstream_flow_control_paused_reading_total, Counter, Total number of times flow control paused reading from upstream.
+  upstream_flow_control_resumed_reading_total, Counter, Total number of times flow control resumed reading from upstream.
+  upstream_flow_control_backed_up_total, Counter, Total number of times the upstream connection backed up and paused reads from downstream.
+  upstream_flow_control_drained_total, Counter, Total number of times the upstream connection drained and resumed reads from downstream.
   membership_change, Counter, Total cluster membership changes
   membership_healthy, Gauge, Current cluster healthy total (inclusive of both health checking and outlier detection)
   membership_total, Gauge, Current cluster membership total
+  retry_or_shadow_abandoned, Counter, Total number of times shadowing or retry buffering was canceled due to buffer limits.
   update_attempt, Counter, Total cluster membership update attempts
   update_success, Counter, Total cluster membership update successes
   update_failure, Counter, Total cluster membership update failures
   max_host_weight, Gauge, Maximum weight of any host in the cluster
+  bind_errors, Counter, Total errors binding the socket to the configured source address.
 
 Health check statistics
 -----------------------
@@ -73,9 +79,9 @@ If health check is configured, the cluster has an additional statistics tree roo
 
   attempt, Counter, Number of health checks
   success, Counter, Number of successful health checks
-  failure, Counter, Number of failed health checks
-  timeout, Counter, Number of timed out health checks
-  protocol_error, Counter, Number of protocol errors
+  failure, Counter, Number of immediately failed health checks (e.g. HTTP 503) as well as network failures
+  passive_failure, Counter, Number of health check failures due to passive events (e.g. x-envoy-immediate-health-check-fail)
+  network_failure, Counter, Number of health check failures due to network error
   verify_cluster, Counter, Number of health checks that attempted cluster name verification
   healthy, Gauge, Number of healthy members
 

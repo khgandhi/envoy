@@ -2,6 +2,7 @@
 
 #include <string>
 
+namespace Envoy {
 namespace Filesystem {
 
 MockOsSysCalls::MockOsSysCalls() { num_writes_ = num_open_ = 0; }
@@ -34,4 +35,5 @@ MockFile::~MockFile() {}
 MockWatcher::MockWatcher() {}
 MockWatcher::~MockWatcher() {}
 
-} // Filesystem
+} // namespace Filesystem
+} // namespace Envoy

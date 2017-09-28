@@ -3,11 +3,13 @@
 #include "envoy/common/pure.h"
 #include "envoy/common/time.h"
 #include "envoy/runtime/runtime.h"
+#include "envoy/tracing/http_tracer.h"
 
 #include "common/tracing/zipkin/span_context.h"
 #include "common/tracing/zipkin/tracer_interface.h"
 #include "common/tracing/zipkin/zipkin_core_types.h"
 
+namespace Envoy {
 namespace Zipkin {
 
 /**
@@ -28,7 +30,7 @@ public:
    *
    * @param span The span that needs action.
    */
-  virtual void reportSpan(Span&& span) PURE;
+  virtual void reportSpan(const Span& span) PURE;
 };
 
 typedef std::unique_ptr<Reporter> ReporterPtr;
@@ -50,26 +52,31 @@ public:
    * used in all annotations' endpoints of the spans created by the Tracer.
    * @param address Pointer to a network-address object. The IP address and port are used
    * in all annotations' endpoints of the spans created by the Tracer.
+   * @param random_generator Reference to the random-number generator to be used by the Tracer.
    */
-  Tracer(const std::string& service_name, Network::Address::InstanceConstSharedPtr address)
-      : service_name_(service_name), address_(address), random_generator_(nullptr) {}
+  Tracer(const std::string& service_name, Network::Address::InstanceConstSharedPtr address,
+         Runtime::RandomGenerator& random_generator)
+      : service_name_(service_name), address_(address), reporter_(nullptr),
+        random_generator_(random_generator) {}
 
   /**
    * Creates a "root" Zipkin span.
    *
+   * @param config The tracing configuration
    * @param span_name Name of the new span.
    * @param start_time The time indicating the beginning of the span.
    */
-  SpanPtr startSpan(const std::string& span_name, MonotonicTime start_time);
+  SpanPtr startSpan(const Tracing::Config&, const std::string& span_name, SystemTime timestamp);
 
   /**
    * Depending on the given context, creates either a "child" or a "shared-context" Zipkin span.
    *
+   * @param config The tracing configuration
    * @param span_name Name of the new span.
    * @param start_time The time indicating the beginning of the span.
    * @param previous_context The context of the span preceding the one to be created.
    */
-  SpanPtr startSpan(const std::string& span_name, MonotonicTime start_time,
+  SpanPtr startSpan(const Tracing::Config&, const std::string& span_name, SystemTime timestamp,
                     SpanContext& previous_context);
 
   /**
@@ -78,27 +85,33 @@ public:
   void reportSpan(Span&& span) override;
 
   /**
+   * @return the service-name attribute associated with the Tracer.
+   */
+  const std::string& serviceName() const { return service_name_; }
+
+  /**
+   * @return the pointer to the address object associated with the Tracer.
+   */
+  const Network::Address::InstanceConstSharedPtr address() const { return address_; }
+
+  /**
    * Associates a Reporter object with this Tracer.
    */
   void setReporter(ReporterPtr reporter);
 
   /**
-   * Provides a random-number generator to be used by the Tracer.
-   * If this method is not used, the Tracer will use a default random-number generator.
-   *
-   * @param random_generator Random-number generator to be used.
+   * @return the random-number generator associated with the Tracer.
    */
-  void setRandomGenerator(Runtime::RandomGeneratorPtr random_generator);
+  Runtime::RandomGenerator& randomGenerator() { return random_generator_; }
 
 private:
-  /**
-   * Uses the default random-number generator if one was not provided by the user
-   */
-  uint64_t generateRandomNumber();
-
   const std::string service_name_;
   Network::Address::InstanceConstSharedPtr address_;
   ReporterPtr reporter_;
-  Runtime::RandomGeneratorPtr random_generator_;
+  Runtime::RandomGenerator& random_generator_;
 };
-} // Zipkin
+
+typedef std::unique_ptr<Tracer> TracerPtr;
+
+} // namespace Zipkin
+} // namespace Envoy

@@ -7,6 +7,7 @@
 
 #include "envoy/mongo/bson.h"
 
+namespace Envoy {
 /**
  * General implementation of https://docs.mongodb.org/manual/reference/mongodb-wire-protocol/
  */
@@ -184,4 +185,5 @@ public:
   virtual void encodeReply(const ReplyMessage& message) PURE;
 };
 
-} // Mongo
+} // namespace Mongo
+} // namespace Envoy

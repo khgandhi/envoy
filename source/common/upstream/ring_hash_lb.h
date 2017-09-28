@@ -8,6 +8,7 @@
 
 #include "common/common/logger.h"
 
+namespace Envoy {
 namespace Upstream {
 
 /**
@@ -51,4 +52,5 @@ private:
   Ring healthy_hosts_ring_;
 };
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

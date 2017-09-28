@@ -2,6 +2,7 @@
 
 #include "envoy/common/exception.h"
 
+namespace Envoy {
 /**
  * Contains an optional value. Like boost::optional and std::optional (not included in C++11).
  */
@@ -9,6 +10,12 @@ template <typename T> class Optional {
 public:
   Optional() {}
   Optional(const T& value) : value_(value), valid_(true) {}
+
+  const T& operator=(const T& new_value) {
+    value_ = new_value;
+    valid_ = true;
+    return value_;
+  }
 
   bool operator==(const Optional<T>& rhs) const {
     if (valid_) {
@@ -42,7 +49,19 @@ public:
     return value_;
   }
 
+  /**
+   * @return the contained value. Will throw if the contained value is not valid.
+   */
+  T& value() {
+    if (!valid_) {
+      throw EnvoyException("fetching invalid Optional value");
+    }
+
+    return value_;
+  }
+
 private:
   T value_;
   bool valid_{};
 };
+} // namespace Envoy

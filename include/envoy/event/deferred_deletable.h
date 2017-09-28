@@ -2,6 +2,7 @@
 
 #include <memory>
 
+namespace Envoy {
 namespace Event {
 
 /**
@@ -16,4 +17,5 @@ public:
 
 typedef std::unique_ptr<DeferredDeletable> DeferredDeletablePtr;
 
-} // Event
+} // namespace Event
+} // namespace Envoy

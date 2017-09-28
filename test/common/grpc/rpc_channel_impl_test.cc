@@ -15,10 +15,11 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Invoke;
 using testing::Return;
+using testing::_;
 
+namespace Envoy {
 namespace Grpc {
 
 class GrpcRequestImplTest : public testing::Test {
@@ -60,14 +61,16 @@ TEST_F(GrpcRequestImplTest, NoError) {
   Http::LowerCaseString header_key("foo");
   std::string header_value("bar");
   EXPECT_CALL(grpc_callbacks_, onPreRequestCustomizeHeaders(_))
-      .WillOnce(Invoke([&](Http::HeaderMap& headers)
-                           -> void { headers.addStatic(header_key, header_value); }));
+      .WillOnce(Invoke([&](Http::HeaderMap& headers) -> void {
+        headers.addReference(header_key, header_value);
+      }));
   service_.SayHello(nullptr, &request, &response, nullptr);
 
   Http::TestHeaderMapImpl expected_request_headers{{":method", "POST"},
                                                    {":path", "/helloworld.Greeter/SayHello"},
                                                    {":authority", "fake_cluster"},
                                                    {"content-type", "application/grpc"},
+                                                   {"te", "trailers"},
                                                    {"foo", "bar"}};
 
   EXPECT_THAT(http_request_->headers(), HeaderMapEqualRef(&expected_request_headers));
@@ -211,6 +214,28 @@ TEST_F(GrpcRequestImplTest, ShortBodyInResponse) {
   http_callbacks_->onSuccess(std::move(response_http_message));
 }
 
+TEST_F(GrpcRequestImplTest, EmptyBodyInResponse) {
+  expectNormalRequest();
+
+  helloworld::HelloRequest request;
+  request.set_name("a name");
+  helloworld::HelloReply response;
+  EXPECT_CALL(grpc_callbacks_, onPreRequestCustomizeHeaders(_));
+  service_.SayHello(nullptr, &request, &response, nullptr);
+
+  Http::MessagePtr response_http_message(new Http::ResponseMessageImpl(
+      Http::HeaderMapPtr{new Http::TestHeaderMapImpl{{":status", "200"}}}));
+  helloworld::HelloReply empty_response;
+  response_http_message->body() = Common::serializeBody(empty_response);
+  EXPECT_EQ(response_http_message->body()->length(), 5);
+  response_http_message->trailers(
+      Http::HeaderMapPtr{new Http::TestHeaderMapImpl{{"grpc-status", "0"}}});
+
+  EXPECT_CALL(grpc_callbacks_, onSuccess());
+  http_callbacks_->onSuccess(std::move(response_http_message));
+  EXPECT_EQ(response.SerializeAsString(), empty_response.SerializeAsString());
+}
+
 TEST_F(GrpcRequestImplTest, BadMessageInResponse) {
   expectNormalRequest();
 
@@ -300,4 +325,5 @@ TEST_F(GrpcRequestImplTest, RequestTimeoutSet) {
   http_callbacks_->onSuccess(std::move(response_http_message));
 }
 
-} // Grpc
+} // namespace Grpc
+} // namespace Envoy

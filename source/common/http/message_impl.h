@@ -9,6 +9,7 @@
 #include "common/common/non_copyable.h"
 #include "common/http/header_map_impl.h"
 
+namespace Envoy {
 namespace Http {
 
 /**
@@ -43,4 +44,5 @@ public:
   ResponseMessageImpl(HeaderMapPtr&& headers) : MessageImpl(std::move(headers)) {}
 };
 
-} // Http
+} // namespace Http
+} // namespace Envoy

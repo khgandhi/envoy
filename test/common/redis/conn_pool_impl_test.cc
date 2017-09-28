@@ -14,14 +14,16 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Eq;
 using testing::InSequence;
 using testing::Invoke;
 using testing::Ref;
 using testing::Return;
+using testing::ReturnRef;
 using testing::SaveArg;
+using testing::_;
 
+namespace Envoy {
 namespace Redis {
 namespace ConnPool {
 
@@ -37,10 +39,10 @@ public:
     client_.reset();
 
     // Make sure all gauges are 0.
-    for (Stats::GaugeSharedPtr gauge : host_->cluster_.stats_store_.gauges()) {
+    for (const Stats::GaugeSharedPtr& gauge : host_->cluster_.stats_store_.gauges()) {
       EXPECT_EQ(0U, gauge->value());
     }
-    for (Stats::GaugeSharedPtr gauge : host_->stats_store_.gauges()) {
+    for (const Stats::GaugeSharedPtr& gauge : host_->stats_store_.gauges()) {
       EXPECT_EQ(0U, gauge->value());
     }
   }
@@ -52,7 +54,7 @@ public:
     }
     )EOF";
 
-    Json::ObjectPtr json_config = Json::Factory::loadFromString(json_string);
+    Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json_string);
     config_.reset(new ConfigImpl(*json_config));
 
     upstream_connection_ = new NiceMock<Network::MockClientConnection>();
@@ -64,6 +66,7 @@ public:
         .WillOnce(SaveArg<0>(&upstream_read_filter_));
     EXPECT_CALL(*upstream_connection_, connect());
     EXPECT_CALL(*upstream_connection_, noDelay(true));
+
     client_ = ClientImpl::create(host_, dispatcher_, EncoderPtr{encoder_}, *this, *config_);
     EXPECT_EQ(1UL, host_->cluster_.stats_.upstream_cx_total_.value());
     EXPECT_EQ(1UL, host_->stats_.cx_total_.value());
@@ -71,7 +74,7 @@ public:
 
   void onConnected() {
     EXPECT_CALL(*connect_or_op_timer_, enableTimer(_));
-    upstream_connection_->raiseEvents(Network::ConnectionEvent::Connected);
+    upstream_connection_->raiseEvent(Network::ConnectionEvent::Connected);
   }
 
   const std::string cluster_name_{"foo"};
@@ -113,18 +116,19 @@ TEST_F(RedisClientImplTest, Basic) {
   EXPECT_EQ(2UL, host_->stats_.rq_active_.value());
 
   Buffer::OwnedImpl fake_data;
-  EXPECT_CALL(*decoder_, decode(Ref(fake_data)))
-      .WillOnce(Invoke([&](Buffer::Instance&) -> void {
-        InSequence s;
-        RespValuePtr response1(new RespValue());
-        EXPECT_CALL(callbacks1, onResponse_(Ref(response1)));
-        callbacks_->onRespValue(std::move(response1));
+  EXPECT_CALL(*decoder_, decode(Ref(fake_data))).WillOnce(Invoke([&](Buffer::Instance&) -> void {
+    InSequence s;
+    RespValuePtr response1(new RespValue());
+    EXPECT_CALL(callbacks1, onResponse_(Ref(response1)));
+    EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(200));
+    callbacks_->onRespValue(std::move(response1));
 
-        RespValuePtr response2(new RespValue());
-        EXPECT_CALL(callbacks2, onResponse_(Ref(response2)));
-        EXPECT_CALL(*connect_or_op_timer_, disableTimer());
-        callbacks_->onRespValue(std::move(response2));
-      }));
+    RespValuePtr response2(new RespValue());
+    EXPECT_CALL(callbacks2, onResponse_(Ref(response2)));
+    EXPECT_CALL(*connect_or_op_timer_, disableTimer());
+    EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(200));
+    callbacks_->onRespValue(std::move(response2));
+  }));
   upstream_read_filter_->onData(fake_data);
 
   EXPECT_CALL(*upstream_connection_, close(Network::ConnectionCloseType::NoFlush));
@@ -155,18 +159,20 @@ TEST_F(RedisClientImplTest, Cancel) {
   handle1->cancel();
 
   Buffer::OwnedImpl fake_data;
-  EXPECT_CALL(*decoder_, decode(Ref(fake_data)))
-      .WillOnce(Invoke([&](Buffer::Instance&) -> void {
-        InSequence s;
-        RespValuePtr response1(new RespValue());
-        EXPECT_CALL(callbacks1, onResponse_(_)).Times(0);
-        callbacks_->onRespValue(std::move(response1));
+  EXPECT_CALL(*decoder_, decode(Ref(fake_data))).WillOnce(Invoke([&](Buffer::Instance&) -> void {
+    InSequence s;
 
-        RespValuePtr response2(new RespValue());
-        EXPECT_CALL(callbacks2, onResponse_(Ref(response2)));
-        EXPECT_CALL(*connect_or_op_timer_, disableTimer());
-        callbacks_->onRespValue(std::move(response2));
-      }));
+    RespValuePtr response1(new RespValue());
+    EXPECT_CALL(callbacks1, onResponse_(_)).Times(0);
+    EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(200));
+    callbacks_->onRespValue(std::move(response1));
+
+    RespValuePtr response2(new RespValue());
+    EXPECT_CALL(callbacks2, onResponse_(Ref(response2)));
+    EXPECT_CALL(*connect_or_op_timer_, disableTimer());
+    EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(200));
+    callbacks_->onRespValue(std::move(response2));
+  }));
   upstream_read_filter_->onData(fake_data);
 
   EXPECT_CALL(*upstream_connection_, close(Network::ConnectionCloseType::NoFlush));
@@ -192,10 +198,11 @@ TEST_F(RedisClientImplTest, FailAll) {
 
   onConnected();
 
+  EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(503));
   EXPECT_CALL(callbacks1, onFailure());
   EXPECT_CALL(*connect_or_op_timer_, disableTimer());
   EXPECT_CALL(connection_callbacks, onEvent(Network::ConnectionEvent::RemoteClose));
-  upstream_connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  upstream_connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
 
   EXPECT_EQ(1UL, host_->cluster_.stats_.upstream_cx_destroy_with_active_rq_.value());
   EXPECT_EQ(1UL, host_->cluster_.stats_.upstream_cx_destroy_remote_with_active_rq_.value());
@@ -221,7 +228,7 @@ TEST_F(RedisClientImplTest, FailAllWithCancel) {
   EXPECT_CALL(callbacks1, onFailure()).Times(0);
   EXPECT_CALL(*connect_or_op_timer_, disableTimer());
   EXPECT_CALL(connection_callbacks, onEvent(Network::ConnectionEvent::LocalClose));
-  upstream_connection_->raiseEvents(Network::ConnectionEvent::LocalClose);
+  upstream_connection_->raiseEvent(Network::ConnectionEvent::LocalClose);
 
   EXPECT_EQ(1UL, host_->cluster_.stats_.upstream_cx_destroy_with_active_rq_.value());
   EXPECT_EQ(1UL, host_->cluster_.stats_.upstream_cx_destroy_local_with_active_rq_.value());
@@ -242,8 +249,10 @@ TEST_F(RedisClientImplTest, ProtocolError) {
   onConnected();
 
   Buffer::OwnedImpl fake_data;
-  EXPECT_CALL(*decoder_, decode(Ref(fake_data)))
-      .WillOnce(Invoke([&](Buffer::Instance&) -> void { throw ProtocolError("error"); }));
+  EXPECT_CALL(*decoder_, decode(Ref(fake_data))).WillOnce(Invoke([&](Buffer::Instance&) -> void {
+    throw ProtocolError("error");
+  }));
+  EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(500));
   EXPECT_CALL(*upstream_connection_, close(Network::ConnectionCloseType::NoFlush));
   EXPECT_CALL(callbacks1, onFailure());
   EXPECT_CALL(*connect_or_op_timer_, disableTimer());
@@ -263,9 +272,10 @@ TEST_F(RedisClientImplTest, ConnectFail) {
   PoolRequest* handle1 = client_->makeRequest(request1, callbacks1);
   EXPECT_NE(nullptr, handle1);
 
+  EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(503));
   EXPECT_CALL(callbacks1, onFailure());
   EXPECT_CALL(*connect_or_op_timer_, disableTimer());
-  upstream_connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  upstream_connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
 
   EXPECT_EQ(1UL, host_->cluster_.stats_.upstream_cx_connect_fail_.value());
   EXPECT_EQ(1UL, host_->stats_.cx_connect_fail_.value());
@@ -282,6 +292,7 @@ TEST_F(RedisClientImplTest, ConnectTimeout) {
   PoolRequest* handle1 = client_->makeRequest(request1, callbacks1);
   EXPECT_NE(nullptr, handle1);
 
+  EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(504));
   EXPECT_CALL(*upstream_connection_, close(Network::ConnectionCloseType::NoFlush));
   EXPECT_CALL(callbacks1, onFailure());
   EXPECT_CALL(*connect_or_op_timer_, disableTimer());
@@ -303,6 +314,7 @@ TEST_F(RedisClientImplTest, OpTimeout) {
 
   onConnected();
 
+  EXPECT_CALL(host_->outlier_detector_, putHttpResponseCode(504));
   EXPECT_CALL(*upstream_connection_, close(Network::ConnectionCloseType::NoFlush));
   EXPECT_CALL(callbacks1, onFailure());
   EXPECT_CALL(*connect_or_op_timer_, disableTimer());
@@ -318,7 +330,7 @@ TEST(RedisClientFactoryImplTest, Basic) {
   }
   )EOF";
 
-  Json::ObjectPtr json_config = Json::Factory::loadFromString(json_string);
+  Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json_string);
 
   ClientFactoryImpl factory;
   Upstream::MockHost::MockCreateConnectionData conn_info;
@@ -340,7 +352,7 @@ public:
     }
     )EOF";
 
-    Json::ObjectPtr json_config = Json::Factory::loadFromString(json_string);
+    Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json_string);
     conn_pool_.reset(new InstanceImpl(cluster_name_, cm_, *this, tls_, *json_config));
   }
 
@@ -413,6 +425,13 @@ TEST_F(RedisConnPoolImplTest, HostRemove) {
   tls_.shutdownThread();
 }
 
+TEST_F(RedisConnPoolImplTest, DeleteFollowedByClusterUpdateCallback) {
+  conn_pool_.reset();
+
+  std::shared_ptr<Upstream::Host> host(new Upstream::MockHost());
+  cm_.thread_local_cluster_.cluster_.runCallbacks({}, {host});
+}
+
 TEST_F(RedisConnPoolImplTest, NoHost) {
   InSequence s;
 
@@ -439,10 +458,11 @@ TEST_F(RedisConnPoolImplTest, RemoteClose) {
   conn_pool_->makeRequest("foo", value, callbacks);
 
   EXPECT_CALL(tls_.dispatcher_, deferredDelete_(_));
-  client->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  client->raiseEvent(Network::ConnectionEvent::RemoteClose);
 
   tls_.shutdownThread();
 }
 
-} // ConnPool
-} // Redis
+} // namespace ConnPool
+} // namespace Redis
+} // namespace Envoy

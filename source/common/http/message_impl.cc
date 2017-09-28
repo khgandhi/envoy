@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 
+namespace Envoy {
 namespace Http {
 
 std::string MessageImpl::bodyAsString() const {
@@ -18,4 +19,5 @@ std::string MessageImpl::bodyAsString() const {
   return ret;
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

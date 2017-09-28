@@ -14,6 +14,7 @@
 
 #include "common/common/assert.h"
 
+namespace Envoy {
 namespace Stats {
 
 /**
@@ -205,15 +206,20 @@ private:
 class IsolatedStoreImpl : public Store {
 public:
   IsolatedStoreImpl()
-      : counters_([this](const std::string& name)
-                      -> CounterImpl* { return new CounterImpl(*alloc_.alloc(name), alloc_); }),
-        gauges_([this](const std::string& name)
-                    -> GaugeImpl* { return new GaugeImpl(*alloc_.alloc(name), alloc_); }),
-        timers_([this](const std::string& name)
-                    -> TimerImpl* { return new TimerImpl(name, *this); }) {}
+      : counters_([this](const std::string& name) -> CounterImpl* {
+          return new CounterImpl(*alloc_.alloc(name), alloc_);
+        }),
+        gauges_([this](const std::string& name) -> GaugeImpl* {
+          return new GaugeImpl(*alloc_.alloc(name), alloc_);
+        }),
+        timers_(
+            [this](const std::string& name) -> TimerImpl* { return new TimerImpl(name, *this); }) {}
 
   // Stats::Scope
   Counter& counter(const std::string& name) override { return counters_.get(name); }
+  ScopePtr createScope(const std::string& name) override {
+    return ScopePtr{new ScopeImpl(*this, name)};
+  }
   void deliverHistogramToSinks(const std::string&, uint64_t) override {}
   void deliverTimingToSinks(const std::string&, std::chrono::milliseconds) override {}
   Gauge& gauge(const std::string& name) override { return gauges_.get(name); }
@@ -222,9 +228,6 @@ public:
   // Stats::Store
   std::list<CounterSharedPtr> counters() const override { return counters_.toList(); }
   std::list<GaugeSharedPtr> gauges() const override { return gauges_.toList(); }
-  ScopePtr createScope(const std::string& name) override {
-    return ScopePtr{new ScopeImpl(*this, name)};
-  }
 
 private:
   struct ScopeImpl : public Scope {
@@ -232,6 +235,9 @@ private:
         : parent_(parent), prefix_(prefix) {}
 
     // Stats::Scope
+    ScopePtr createScope(const std::string& name) override {
+      return ScopePtr{new ScopeImpl(parent_, prefix_ + name)};
+    }
     void deliverHistogramToSinks(const std::string&, uint64_t) override {}
     void deliverTimingToSinks(const std::string&, std::chrono::milliseconds) override {}
     Counter& counter(const std::string& name) override { return parent_.counter(prefix_ + name); }
@@ -248,4 +254,5 @@ private:
   IsolatedStatsCache<Timer, TimerImpl> timers_;
 };
 
-} // Stats
+} // namespace Stats
+} // namespace Envoy

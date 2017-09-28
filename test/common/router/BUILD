@@ -12,6 +12,7 @@ envoy_cc_test(
     name = "config_impl_test",
     srcs = ["config_impl_test.cc"],
     deps = [
+        "//source/common/config:rds_json_lib",
         "//source/common/http:header_map_lib",
         "//source/common/http:headers_lib",
         "//source/common/json:json_loader_lib",
@@ -26,11 +27,15 @@ envoy_cc_test(
     name = "rds_impl_test",
     srcs = ["rds_impl_test.cc"],
     deps = [
+        "//source/common/config:filter_json_lib",
+        "//source/common/config:utility_lib",
         "//source/common/http:message_lib",
         "//source/common/json:json_loader_lib",
         "//source/common/router:rds_lib",
+        "//source/server/http:admin_lib",
         "//test/mocks/init:init_mocks",
         "//test/mocks/local_info:local_info_mocks",
+        "//test/mocks/server:server_mocks",
         "//test/mocks/thread_local:thread_local_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
@@ -54,6 +59,7 @@ envoy_cc_test(
 envoy_cc_test(
     name = "router_ratelimit_test",
     srcs = ["router_ratelimit_test.cc"],
+    external_deps = ["envoy_rds"],
     deps = [
         "//source/common/http:header_map_lib",
         "//source/common/json:json_loader_lib",
@@ -95,5 +101,17 @@ envoy_cc_test(
         "//source/common/http:message_lib",
         "//source/common/router:shadow_writer_lib",
         "//test/mocks/upstream:upstream_mocks",
+    ],
+)
+
+envoy_cc_test(
+    name = "req_header_formatter_test",
+    srcs = ["req_header_formatter_test.cc"],
+    deps = [
+        "//source/common/config:rds_json_lib",
+        "//source/common/router:req_header_formatter_lib",
+        "//test/mocks/http:http_mocks",
+        "//test/mocks/upstream:upstream_mocks",
+        "//test/test_common:utility_lib",
     ],
 )

@@ -24,13 +24,14 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
 using testing::Test;
+using testing::_;
 
+namespace Envoy {
 namespace Tracing {
 
 class LightStepDriverTest : public Test {
@@ -59,7 +60,7 @@ public:
     std::string valid_config = R"EOF(
       {"collector_cluster": "fake_cluster"}
     )EOF";
-    Json::ObjectPtr loader = Json::Factory::loadFromString(valid_config);
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(valid_config);
 
     setup(*loader, true);
   }
@@ -71,14 +72,16 @@ public:
   SystemTime start_time_;
   Http::AccessLog::MockRequestInfo request_info_;
 
+  NiceMock<ThreadLocal::MockInstance> tls_;
   std::unique_ptr<LightStepDriver> driver_;
   NiceMock<Event::MockTimer>* timer_;
   Stats::IsolatedStoreImpl stats_;
   NiceMock<Upstream::MockClusterManager> cm_;
   NiceMock<Runtime::MockRandomGenerator> random_;
   NiceMock<Runtime::MockLoader> runtime_;
-  NiceMock<ThreadLocal::MockInstance> tls_;
   NiceMock<LocalInfo::MockLocalInfo> local_info_;
+
+  NiceMock<Tracing::MockConfig> config_;
 };
 
 TEST_F(LightStepDriverTest, InitializeDriver) {
@@ -86,14 +89,14 @@ TEST_F(LightStepDriverTest, InitializeDriver) {
     std::string invalid_config = R"EOF(
       {"fake" : "fake"}
     )EOF";
-    Json::ObjectPtr loader = Json::Factory::loadFromString(invalid_config);
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(invalid_config);
 
     EXPECT_THROW(setup(*loader, false), EnvoyException);
   }
 
   {
     std::string empty_config = "{}";
-    Json::ObjectPtr loader = Json::Factory::loadFromString(empty_config);
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(empty_config);
 
     EXPECT_THROW(setup(*loader, false), EnvoyException);
   }
@@ -105,7 +108,7 @@ TEST_F(LightStepDriverTest, InitializeDriver) {
     std::string valid_config = R"EOF(
       {"collector_cluster": "fake_cluster"}
     )EOF";
-    Json::ObjectPtr loader = Json::Factory::loadFromString(valid_config);
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(valid_config);
 
     EXPECT_THROW(setup(*loader, false), EnvoyException);
   }
@@ -118,7 +121,7 @@ TEST_F(LightStepDriverTest, InitializeDriver) {
     std::string valid_config = R"EOF(
       {"collector_cluster": "fake_cluster"}
     )EOF";
-    Json::ObjectPtr loader = Json::Factory::loadFromString(valid_config);
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(valid_config);
 
     EXPECT_THROW(setup(*loader, false), EnvoyException);
   }
@@ -131,7 +134,7 @@ TEST_F(LightStepDriverTest, InitializeDriver) {
     std::string valid_config = R"EOF(
       {"collector_cluster": "fake_cluster"}
     )EOF";
-    Json::ObjectPtr loader = Json::Factory::loadFromString(valid_config);
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(valid_config);
 
     setup(*loader, true);
   }
@@ -164,11 +167,20 @@ TEST_F(LightStepDriverTest, FlushSeveralSpans) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("tracing.lightstep.request_timeout", 5000U))
       .WillOnce(Return(5000U));
 
-  SpanPtr first_span = driver_->startSpan(request_headers_, operation_name_, start_time_);
-  first_span->finishSpan();
+  SpanPtr first_span = driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
+  Tracing::MockFinalizer finalizer;
 
-  SpanPtr second_span = driver_->startSpan(request_headers_, operation_name_, start_time_);
-  second_span->finishSpan();
+  // Currently not possible to access the operation from the span, but this
+  // invocation will make sure setting the operation does not cause a crash!
+  first_span->setOperation("myOperation");
+
+  EXPECT_CALL(finalizer, finalize(_));
+  first_span->finishSpan(finalizer);
+
+  SpanPtr second_span = driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
+
+  EXPECT_CALL(finalizer, finalize(_));
+  second_span->finishSpan(finalizer);
 
   Http::MessagePtr msg(new Http::ResponseMessageImpl(
       Http::HeaderMapPtr{new Http::TestHeaderMapImpl{{":status", "200"}}}));
@@ -201,8 +213,11 @@ TEST_F(LightStepDriverTest, FlushSpansTimer) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("tracing.lightstep.min_flush_spans", 5))
       .WillOnce(Return(5));
 
-  SpanPtr span = driver_->startSpan(request_headers_, operation_name_, start_time_);
-  span->finishSpan();
+  SpanPtr span = driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
+  Tracing::MockFinalizer finalizer;
+
+  EXPECT_CALL(finalizer, finalize(_));
+  span->finishSpan(finalizer);
 
   // Timer should be re-enabled.
   EXPECT_CALL(*timer_, enableTimer(std::chrono::milliseconds(1000)));
@@ -242,8 +257,11 @@ TEST_F(LightStepDriverTest, FlushOneSpanGrpcFailure) {
   EXPECT_CALL(runtime_.snapshot_, getInteger("tracing.lightstep.request_timeout", 5000U))
       .WillOnce(Return(5000U));
 
-  SpanPtr span = driver_->startSpan(request_headers_, operation_name_, start_time_);
-  span->finishSpan();
+  SpanPtr span = driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
+  Tracing::MockFinalizer finalizer;
+
+  EXPECT_CALL(finalizer, finalize(_));
+  span->finishSpan(finalizer);
 
   Http::MessagePtr msg(new Http::ResponseMessageImpl(
       Http::HeaderMapPtr{new Http::TestHeaderMapImpl{{":status", "200"}}}));
@@ -266,14 +284,17 @@ TEST_F(LightStepDriverTest, SerializeAndDeserializeContext) {
   // Supply bogus context, that will be simply ignored.
   const std::string invalid_context = "notvalidcontext";
   request_headers_.insertOtSpanContext().value(invalid_context);
-  driver_->startSpan(request_headers_, operation_name_, start_time_);
+  driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
 
   std::string injected_ctx = request_headers_.OtSpanContext()->value().c_str();
   EXPECT_FALSE(injected_ctx.empty());
 
   // Supply empty context.
   request_headers_.removeOtSpanContext();
-  SpanPtr span = driver_->startSpan(request_headers_, operation_name_, start_time_);
+  SpanPtr span = driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
+
+  EXPECT_EQ(nullptr, request_headers_.OtSpanContext());
+  span->injectContext(request_headers_);
 
   injected_ctx = request_headers_.OtSpanContext()->value().c_str();
   EXPECT_FALSE(injected_ctx.empty());
@@ -284,9 +305,36 @@ TEST_F(LightStepDriverTest, SerializeAndDeserializeContext) {
   ctx.ParseFromString(context);
 
   // Supply parent context, request_headers has properly populated x-ot-span-context.
-  SpanPtr span_with_parent = driver_->startSpan(request_headers_, operation_name_, start_time_);
+  SpanPtr span_with_parent =
+      driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
+  request_headers_.removeOtSpanContext();
+  span_with_parent->injectContext(request_headers_);
   injected_ctx = request_headers_.OtSpanContext()->value().c_str();
   EXPECT_FALSE(injected_ctx.empty());
 }
 
-} // Tracing
+TEST_F(LightStepDriverTest, SpawnChild) {
+  setupValidDriver();
+
+  SpanPtr parent = driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
+  parent->injectContext(request_headers_);
+
+  SpanPtr childViaHeaders =
+      driver_->startSpan(config_, request_headers_, operation_name_, start_time_);
+  SpanPtr childViaSpawn = parent->spawnChild(config_, operation_name_, start_time_);
+
+  Http::TestHeaderMapImpl base1{{":path", "/"}, {":method", "GET"}, {"x-request-id", "foo"}};
+  Http::TestHeaderMapImpl base2{{":path", "/"}, {":method", "GET"}, {"x-request-id", "foo"}};
+
+  childViaHeaders->injectContext(base1);
+  childViaSpawn->injectContext(base2);
+
+  std::string base1_context = Base64::decode(base1.OtSpanContext()->value().c_str());
+  std::string base2_context = Base64::decode(base2.OtSpanContext()->value().c_str());
+
+  EXPECT_FALSE(base1_context.empty());
+  EXPECT_FALSE(base2_context.empty());
+}
+
+} // namespace Tracing
+} // namespace Envoy

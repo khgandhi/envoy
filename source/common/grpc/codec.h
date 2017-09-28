@@ -6,6 +6,7 @@
 
 #include "envoy/buffer/buffer.h"
 
+namespace Envoy {
 namespace Grpc {
 // Last bit for an expanded message without compression.
 const uint8_t GRPC_FH_DEFAULT = 0b0u;
@@ -44,6 +45,11 @@ public:
   // @return bool whether the decoding succeeded or not.
   bool decode(Buffer::Instance& input, std::vector<Frame>& output);
 
+  // Determine the length of the current frame being decoded. This is useful when supplying a
+  // partial frame to decode() and wanting to know how many more bytes need to be read to complete
+  // the frame.
+  uint32_t length() const { return frame_.length_; }
+
 private:
   // Wire format (http://www.grpc.io/docs/guides/wire.html) of GRPC data frame
   // header:
@@ -80,4 +86,5 @@ private:
   State state_;
   Frame frame_;
 };
-} // Grpc
+} // namespace Grpc
+} // namespace Envoy

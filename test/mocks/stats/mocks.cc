@@ -5,6 +5,7 @@
 
 using testing::_;
 
+namespace Envoy {
 namespace Stats {
 
 MockCounter::MockCounter() {}
@@ -25,4 +26,5 @@ MockStore::~MockStore() {}
 MockIsolatedStatsStore::MockIsolatedStatsStore() {}
 MockIsolatedStatsStore::~MockIsolatedStatsStore() {}
 
-} // Stats
+} // namespace Stats
+} // namespace Envoy

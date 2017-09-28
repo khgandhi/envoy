@@ -22,6 +22,23 @@ envoy_cc_library(
         "//source/common/buffer:buffer_lib",
         "//source/common/common:assert_lib",
         "//source/common/common:enum_to_int",
+        "//source/common/http:codes_lib",
+        "//source/common/http:header_map_lib",
+        "//source/common/http:headers_lib",
+        "//source/common/http:utility_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "cors_filter_lib",
+    srcs = ["cors_filter.cc"],
+    hdrs = ["cors_filter.h"],
+    deps = [
+        "//include/envoy/http:codes_interface",
+        "//include/envoy/http:filter_interface",
+        "//source/common/buffer:buffer_lib",
+        "//source/common/common:assert_lib",
+        "//source/common/common:enum_to_int",
         "//source/common/http:header_map_lib",
         "//source/common/http:headers_lib",
     ],
@@ -46,6 +63,19 @@ envoy_cc_library(
         "//source/common/http:headers_lib",
         "//source/common/json:config_schemas_lib",
         "//source/common/router:config_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "ip_tagging_filter_lib",
+    srcs = ["ip_tagging_filter.cc"],
+    hdrs = ["ip_tagging_filter.h"],
+    deps = [
+        "//include/envoy/http:filter_interface",
+        "//include/envoy/json:json_object_interface",
+        "//source/common/common:assert_lib",
+        "//source/common/json:config_schemas_lib",
+        "//source/common/json:json_validator_lib",
     ],
 )
 

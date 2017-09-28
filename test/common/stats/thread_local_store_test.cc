@@ -8,16 +8,18 @@
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/stats/mocks.h"
 #include "test/mocks/thread_local/mocks.h"
+#include "test/test_common/utility.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::InSequence;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
+using testing::_;
 
+namespace Envoy {
 namespace Stats {
 
 /**
@@ -63,34 +65,17 @@ private:
 class StatsThreadLocalStoreTest : public testing::Test, public RawStatDataAllocator {
 public:
   StatsThreadLocalStoreTest() {
-    ON_CALL(*this, alloc(_))
-        .WillByDefault(
-            Invoke([this](const std::string& name) -> RawStatData* { return alloc_.alloc(name); }));
+    ON_CALL(*this, alloc(_)).WillByDefault(Invoke([this](const std::string& name) -> RawStatData* {
+      return alloc_.alloc(name);
+    }));
 
-    ON_CALL(*this, free(_))
-        .WillByDefault(Invoke([this](RawStatData& data) -> void { return alloc_.free(data); }));
+    ON_CALL(*this, free(_)).WillByDefault(Invoke([this](RawStatData& data) -> void {
+      return alloc_.free(data);
+    }));
 
     EXPECT_CALL(*this, alloc("stats.overflow"));
     store_.reset(new ThreadLocalStoreImpl(*this));
     store_->addSink(sink_);
-  }
-
-  CounterSharedPtr findCounter(const std::string& name) {
-    for (auto counter : store_->counters()) {
-      if (counter->name() == name) {
-        return counter;
-      }
-    }
-    return nullptr;
-  }
-
-  GaugeSharedPtr findGauge(const std::string& name) {
-    for (auto gauge : store_->gauges()) {
-      if (gauge->name() == name) {
-        return gauge;
-      }
-    }
-    return nullptr;
   }
 
   MOCK_METHOD1(alloc, RawStatData*(const std::string& name));
@@ -199,6 +184,8 @@ TEST_F(StatsThreadLocalStoreTest, BasicScope) {
   scope1->deliverTimingToSinks("t", std::chrono::milliseconds(200));
 
   store_->shutdownThreading();
+  scope1->deliverHistogramToSinks("h", 100);
+  scope1->deliverTimingToSinks("t", std::chrono::milliseconds(200));
   tls_.shutdownThread();
 
   // Includes overflow stat.
@@ -230,6 +217,37 @@ TEST_F(StatsThreadLocalStoreTest, ScopeDelete) {
 
   // Includes overflow stat.
   EXPECT_CALL(*this, free(_));
+}
+
+TEST_F(StatsThreadLocalStoreTest, NestedScopes) {
+  InSequence s;
+  store_->initializeThreading(main_thread_dispatcher_, tls_);
+
+  ScopePtr scope1 = store_->createScope("scope1.");
+  EXPECT_CALL(*this, alloc(_));
+  Counter& c1 = scope1->counter("foo.bar");
+  EXPECT_EQ("scope1.foo.bar", c1.name());
+
+  ScopePtr scope2 = scope1->createScope("foo.");
+  EXPECT_CALL(*this, alloc(_));
+  Counter& c2 = scope2->counter("bar");
+  EXPECT_NE(&c1, &c2);
+  EXPECT_EQ("scope1.foo.bar", c2.name());
+
+  // Different allocations point to the same referenced counted backing memory.
+  c1.inc();
+  EXPECT_EQ(1UL, c1.value());
+  EXPECT_EQ(c1.value(), c2.value());
+
+  EXPECT_CALL(*this, alloc(_));
+  Gauge& g1 = scope2->gauge("some_gauge");
+  EXPECT_EQ("scope1.foo.some_gauge", g1.name());
+
+  store_->shutdownThreading();
+  tls_.shutdownThread();
+
+  // Includes overflow stat.
+  EXPECT_CALL(*this, free(_)).Times(4);
 }
 
 TEST_F(StatsThreadLocalStoreTest, OverlappingScopes) {
@@ -316,10 +334,10 @@ TEST_F(StatsThreadLocalStoreTest, ShuttingDown) {
   store_->gauge("g2");
 
   // c1, g1 should have a thread local ref, but c2, g2 should not.
-  EXPECT_EQ(3L, findCounter("c1").use_count());
-  EXPECT_EQ(3L, findGauge("g1").use_count());
-  EXPECT_EQ(2L, findCounter("c2").use_count());
-  EXPECT_EQ(2L, findGauge("g2").use_count());
+  EXPECT_EQ(3L, TestUtility::findCounter(*store_, "c1").use_count());
+  EXPECT_EQ(3L, TestUtility::findGauge(*store_, "g1").use_count());
+  EXPECT_EQ(2L, TestUtility::findCounter(*store_, "c2").use_count());
+  EXPECT_EQ(2L, TestUtility::findGauge(*store_, "g2").use_count());
 
   tls_.shutdownThread();
 
@@ -327,4 +345,5 @@ TEST_F(StatsThreadLocalStoreTest, ShuttingDown) {
   EXPECT_CALL(*this, free(_)).Times(5);
 }
 
-} // Stats
+} // namespace Stats
+} // namespace Envoy

@@ -11,6 +11,7 @@
 #include "common/http/header_map_impl.h"
 #include "common/json/json_loader.h"
 
+namespace Envoy {
 namespace Tracing {
 
 enum class Reason {
@@ -61,11 +62,45 @@ public:
   static const std::string EGRESS_OPERATION;
 };
 
+class NullSpan : public Span {
+public:
+  // Tracing::Span
+  void setOperation(const std::string&) override {}
+  void setTag(const std::string&, const std::string&) override {}
+  void finishSpan(SpanFinalizer&) override {}
+  void injectContext(Http::HeaderMap&) override {}
+  SpanPtr spawnChild(const Config&, const std::string&, SystemTime) override {
+    return SpanPtr{new NullSpan()};
+  }
+};
+
+class NullFinalizer : public SpanFinalizer {
+public:
+  // Tracing::SpanFinalizer
+  void finalize(Span&) override {}
+};
+
+/**
+ * Finalizer for Spans covering standard request ingress.
+ */
+class HttpConnManFinalizerImpl : public SpanFinalizer {
+public:
+  HttpConnManFinalizerImpl(Http::HeaderMap* request_headers,
+                           Http::AccessLog::RequestInfo& request_info, Config& tracing_config);
+
+  void finalize(Span& span) override;
+
+private:
+  Http::HeaderMap* request_headers_;
+  Http::AccessLog::RequestInfo& request_info_;
+  Config& tracing_config_;
+};
+
 class HttpNullTracer : public HttpTracer {
 public:
   // Tracing::HttpTracer
   SpanPtr startSpan(const Config&, Http::HeaderMap&, const Http::AccessLog::RequestInfo&) override {
-    return nullptr;
+    return SpanPtr{new NullSpan()};
   }
 };
 
@@ -82,4 +117,5 @@ private:
   const LocalInfo::LocalInfo& local_info_;
 };
 
-} // Tracing
+} // namespace Tracing
+} // namespace Envoy

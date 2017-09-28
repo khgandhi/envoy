@@ -9,16 +9,19 @@
 #include "test/mocks/grpc/mocks.h"
 #include "test/mocks/upstream/mocks.h"
 #include "test/test_common/printers.h"
+#include "test/test_common/utility.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::AtLeast;
 using testing::Invoke;
+using testing::Ref;
 using testing::Return;
 using testing::WithArg;
+using testing::_;
 
+namespace Envoy {
 namespace RateLimit {
 
 class MockRequestCallbacks : public RequestCallbacks {
@@ -26,129 +29,112 @@ public:
   MOCK_METHOD1(complete, void(LimitStatus status));
 };
 
-class RateLimitGrpcClientTest : public testing::Test, public Grpc::RpcChannelFactory {
+class RateLimitGrpcClientTest : public testing::Test {
 public:
   RateLimitGrpcClientTest()
-      : channel_(new Grpc::MockRpcChannel()),
-        client_(*this, Optional<std::chrono::milliseconds>()) {}
+      : async_client_(new Grpc::MockAsyncClient<pb::lyft::ratelimit::RateLimitRequest,
+                                                pb::lyft::ratelimit::RateLimitResponse>()),
+        client_(RateLimitAsyncClientPtr{async_client_}, Optional<std::chrono::milliseconds>()) {}
 
-  // Grpc::RpcChannelFactory
-  Grpc::RpcChannelPtr create(Grpc::RpcChannelCallbacks& callbacks,
-                             const Optional<std::chrono::milliseconds>&) {
-    channel_callbacks_ = &callbacks;
-    return Grpc::RpcChannelPtr{channel_};
-  }
-
-  Grpc::MockRpcChannel* channel_;
-  Grpc::RpcChannelCallbacks* channel_callbacks_;
+  Grpc::MockAsyncClient<pb::lyft::ratelimit::RateLimitRequest,
+                        pb::lyft::ratelimit::RateLimitResponse>* async_client_;
+  Grpc::MockAsyncRequest async_request_;
   GrpcClientImpl client_;
   MockRequestCallbacks request_callbacks_;
 };
 
 TEST_F(RateLimitGrpcClientTest, Basic) {
-  pb::lyft::ratelimit::RateLimitResponse* response;
+  std::unique_ptr<pb::lyft::ratelimit::RateLimitResponse> response;
 
   {
     pb::lyft::ratelimit::RateLimitRequest request;
     Http::HeaderMapImpl headers;
     GrpcClientImpl::createRequest(request, "foo", {{{{"foo", "bar"}}}});
-    EXPECT_CALL(*channel_, CallMethod(_, _, ProtoMessageEqual(&request), _, nullptr))
-        .WillOnce(WithArg<3>(Invoke([&](proto::Message* raw_response) -> void {
-          response = dynamic_cast<pb::lyft::ratelimit::RateLimitResponse*>(raw_response);
-        })));
+    EXPECT_CALL(*async_client_, send(_, ProtoEq(request), Ref(client_), _))
+        .WillOnce(Invoke([this](
+                             const Protobuf::MethodDescriptor& service_method,
+                             const pb::lyft::ratelimit::RateLimitRequest&,
+                             Grpc::AsyncRequestCallbacks<pb::lyft::ratelimit::RateLimitResponse>&,
+                             const Optional<std::chrono::milliseconds>&) -> Grpc::AsyncRequest* {
+          EXPECT_EQ("pb.lyft.ratelimit.RateLimitService", service_method.service()->full_name());
+          EXPECT_EQ("ShouldRateLimit", service_method.name());
+          return &async_request_;
+        }));
 
     client_.limit(request_callbacks_, "foo", {{{{"foo", "bar"}}}}, Tracing::EMPTY_CONTEXT);
 
-    client_.onPreRequestCustomizeHeaders(headers);
+    client_.onCreateInitialMetadata(headers);
     EXPECT_EQ(nullptr, headers.RequestId());
 
-    response->Clear();
+    response.reset(new pb::lyft::ratelimit::RateLimitResponse());
     response->set_overall_code(pb::lyft::ratelimit::RateLimitResponse_Code_OVER_LIMIT);
     EXPECT_CALL(request_callbacks_, complete(LimitStatus::OverLimit));
-    channel_callbacks_->onSuccess();
+    client_.onSuccess(std::move(response));
   }
 
   {
     pb::lyft::ratelimit::RateLimitRequest request;
     Http::HeaderMapImpl headers;
     GrpcClientImpl::createRequest(request, "foo", {{{{"foo", "bar"}, {"bar", "baz"}}}});
-    EXPECT_CALL(*channel_, CallMethod(_, _, ProtoMessageEqual(&request), _, nullptr))
-        .WillOnce(WithArg<3>(Invoke([&](proto::Message* raw_response) -> void {
-          response = dynamic_cast<pb::lyft::ratelimit::RateLimitResponse*>(raw_response);
-        })));
+    EXPECT_CALL(*async_client_, send(_, ProtoEq(request), _, _)).WillOnce(Return(&async_request_));
 
     client_.limit(request_callbacks_, "foo", {{{{"foo", "bar"}, {"bar", "baz"}}}},
                   {"requestid", "context"});
 
-    client_.onPreRequestCustomizeHeaders(headers);
+    client_.onCreateInitialMetadata(headers);
     EXPECT_EQ(headers.RequestId()->value(), "requestid");
     EXPECT_EQ(headers.OtSpanContext()->value(), "context");
 
-    response->Clear();
+    response.reset(new pb::lyft::ratelimit::RateLimitResponse());
     response->set_overall_code(pb::lyft::ratelimit::RateLimitResponse_Code_OK);
     EXPECT_CALL(request_callbacks_, complete(LimitStatus::OK));
-    channel_callbacks_->onSuccess();
+    client_.onSuccess(std::move(response));
   }
 
   {
     pb::lyft::ratelimit::RateLimitRequest request;
-    GrpcClientImpl::createRequest(request, "foo", {{{{"foo", "bar"}, {"bar", "baz"}}},
-                                                   {{{"foo2", "bar2"}, {"bar2", "baz2"}}}});
-    EXPECT_CALL(*channel_, CallMethod(_, _, ProtoMessageEqual(&request), _, nullptr))
-        .WillOnce(WithArg<3>(Invoke([&](proto::Message* raw_response) -> void {
-          response = dynamic_cast<pb::lyft::ratelimit::RateLimitResponse*>(raw_response);
-        })));
+    GrpcClientImpl::createRequest(
+        request, "foo",
+        {{{{"foo", "bar"}, {"bar", "baz"}}}, {{{"foo2", "bar2"}, {"bar2", "baz2"}}}});
+    EXPECT_CALL(*async_client_, send(_, ProtoEq(request), _, _)).WillOnce(Return(&async_request_));
 
     client_.limit(request_callbacks_, "foo",
                   {{{{"foo", "bar"}, {"bar", "baz"}}}, {{{"foo2", "bar2"}, {"bar2", "baz2"}}}},
                   Tracing::EMPTY_CONTEXT);
 
-    response->Clear();
+    response.reset(new pb::lyft::ratelimit::RateLimitResponse());
     EXPECT_CALL(request_callbacks_, complete(LimitStatus::Error));
-    channel_callbacks_->onFailure(Optional<uint64_t>(), "foo");
+    client_.onFailure(Grpc::Status::Unknown, "");
   }
 }
 
 TEST_F(RateLimitGrpcClientTest, Cancel) {
-  pb::lyft::ratelimit::RateLimitResponse* response;
+  std::unique_ptr<pb::lyft::ratelimit::RateLimitResponse> response;
 
-  EXPECT_CALL(*channel_, CallMethod(_, _, _, _, nullptr))
-      .WillOnce(WithArg<3>(Invoke([&](proto::Message* raw_response) -> void {
-        response = dynamic_cast<pb::lyft::ratelimit::RateLimitResponse*>(raw_response);
-      })));
+  EXPECT_CALL(*async_client_, send(_, _, _, _)).WillOnce(Return(&async_request_));
 
   client_.limit(request_callbacks_, "foo", {{{{"foo", "bar"}}}}, Tracing::EMPTY_CONTEXT);
 
-  EXPECT_CALL(*channel_, cancel());
+  EXPECT_CALL(async_request_, cancel());
   client_.cancel();
 }
 
 TEST(RateLimitGrpcFactoryTest, NoCluster) {
-  std::string json = R"EOF(
-  {
-    "cluster_name": "foo"
-  }
-  )EOF";
-
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
+  envoy::api::v2::RateLimitServiceConfig config;
+  config.set_cluster_name("foo");
   Upstream::MockClusterManager cm;
 
   EXPECT_CALL(cm, get("foo")).WillOnce(Return(nullptr));
-  EXPECT_THROW(GrpcFactoryImpl(*config, cm), EnvoyException);
+  EXPECT_THROW(GrpcFactoryImpl(config, cm), EnvoyException);
 }
 
 TEST(RateLimitGrpcFactoryTest, Create) {
-  std::string json = R"EOF(
-  {
-    "cluster_name": "foo"
-  }
-  )EOF";
-
-  Json::ObjectPtr config = Json::Factory::loadFromString(json);
+  envoy::api::v2::RateLimitServiceConfig config;
+  config.set_cluster_name("foo");
   Upstream::MockClusterManager cm;
 
   EXPECT_CALL(cm, get("foo")).Times(AtLeast(1));
-  GrpcFactoryImpl factory(*config, cm);
+  GrpcFactoryImpl factory(config, cm);
   factory.create(Optional<std::chrono::milliseconds>());
 }
 
@@ -161,4 +147,5 @@ TEST(RateLimitNullFactoryTest, Basic) {
   client->cancel();
 }
 
-} // RateLimit
+} // namespace RateLimit
+} // namespace Envoy

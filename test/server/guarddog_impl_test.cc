@@ -19,6 +19,7 @@
 using testing::InSequence;
 using testing::NiceMock;
 
+namespace Envoy {
 namespace Server {
 
 /**
@@ -31,11 +32,11 @@ namespace Server {
 class GuardDogDeathTest : public testing::Test {
 protected:
   GuardDogDeathTest()
-      : config_kill_(1000, 1000, 100, 1000), config_multikill_(1000, 1000, 1000, 500) {
-    ON_CALL(time_source_, currentTime())
-        .WillByDefault(testing::Invoke([&]() {
-          return std::chrono::steady_clock::time_point(std::chrono::milliseconds(mock_time_));
-        }));
+      : config_kill_(1000, 1000, 100, 1000), config_multikill_(1000, 1000, 1000, 500),
+        mock_time_(0) {
+    ON_CALL(time_source_, currentTime()).WillByDefault(testing::Invoke([this]() {
+      return std::chrono::steady_clock::time_point(std::chrono::milliseconds(mock_time_));
+    }));
   }
 
   /**
@@ -131,11 +132,10 @@ TEST_F(GuardDogAlmostDeadTest, NearDeathTest) {
 
 class GuardDogMissTest : public testing::Test {
 protected:
-  GuardDogMissTest() : config_miss_(500, 1000, 0, 0), config_mega_(1000, 500, 0, 0) {
-    ON_CALL(time_source_, currentTime())
-        .WillByDefault(testing::Invoke([&]() {
-          return std::chrono::steady_clock::time_point(std::chrono::milliseconds(mock_time_));
-        }));
+  GuardDogMissTest() : config_miss_(500, 1000, 0, 0), config_mega_(1000, 500, 0, 0), mock_time_(0) {
+    ON_CALL(time_source_, currentTime()).WillByDefault(testing::Invoke([this]() {
+      return std::chrono::steady_clock::time_point(std::chrono::milliseconds(mock_time_));
+    }));
   }
 
   NiceMock<Configuration::MockMain> config_miss_;
@@ -167,10 +167,9 @@ TEST_F(GuardDogMissTest, MissTest) {
 TEST_F(GuardDogMissTest, MegaMissTest) {
   // This test checks the actual collected statistics after doing some timer
   // advances that should and shouldn't increment the counters.
-  ON_CALL(time_source_, currentTime())
-      .WillByDefault(testing::Invoke([&]() {
-        return std::chrono::steady_clock::time_point(std::chrono::milliseconds(mock_time_));
-      }));
+  ON_CALL(time_source_, currentTime()).WillByDefault(testing::Invoke([this]() {
+    return std::chrono::steady_clock::time_point(std::chrono::milliseconds(mock_time_));
+  }));
   GuardDogImpl gd(stats_store_, config_mega_, time_source_);
   auto unpet_dog = gd.createWatchDog(0);
   // We'd better start at 0:
@@ -185,6 +184,50 @@ TEST_F(GuardDogMissTest, MegaMissTest) {
   EXPECT_EQ(1UL, stats_store_.counter("server.watchdog_mega_miss").value());
   gd.stopWatching(unpet_dog);
   unpet_dog = nullptr;
+}
+
+TEST_F(GuardDogMissTest, MissCountTest) {
+  // This tests a flake discovered in the MissTest where real timeout or
+  // spurious condition_variable wakeup causes the counter to get incremented
+  // more than it should be.
+  ON_CALL(time_source_, currentTime()).WillByDefault(testing::Invoke([this]() {
+    return std::chrono::steady_clock::time_point(std::chrono::milliseconds(mock_time_));
+  }));
+  GuardDogImpl gd(stats_store_, config_miss_, time_source_);
+  auto sometimes_pet_dog = gd.createWatchDog(0);
+  // These steps are executed once without ever touching the watchdog.
+  // Then the last step is to touch the watchdog and repeat the steps.
+  // This verifies that the behavior is reset back to baseline after a touch.
+  for (unsigned long i = 0; i < 2; i++) {
+    EXPECT_EQ(i, stats_store_.counter("server.watchdog_miss").value());
+    // This shouldn't be enough to increment the stat:
+    mock_time_ += 499;
+    gd.forceCheckForTest();
+    EXPECT_EQ(i, stats_store_.counter("server.watchdog_miss").value());
+    // And if we force re-execution of the loop it still shouldn't be:
+    gd.forceCheckForTest();
+    EXPECT_EQ(i, stats_store_.counter("server.watchdog_miss").value());
+    // Just 2ms more will make it greater than 500ms timeout:
+    mock_time_ += 2;
+    gd.forceCheckForTest();
+    EXPECT_EQ(i + 1, stats_store_.counter("server.watchdog_miss").value());
+    // Spurious wakeup, we should still only have one miss counted.
+    gd.forceCheckForTest();
+    EXPECT_EQ(i + 1, stats_store_.counter("server.watchdog_miss").value());
+    // When we finally touch the dog we should get one more increment once the
+    // timeout value expires:
+    sometimes_pet_dog->touch();
+  }
+  mock_time_ += 1000;
+  sometimes_pet_dog->touch();
+  // Make sure megamiss still works:
+  EXPECT_EQ(0UL, stats_store_.counter("server.watchdog_mega_miss").value());
+  mock_time_ += 1500;
+  gd.forceCheckForTest();
+  EXPECT_EQ(1UL, stats_store_.counter("server.watchdog_mega_miss").value());
+
+  gd.stopWatching(sometimes_pet_dog);
+  sometimes_pet_dog = nullptr;
 }
 
 TEST(GuardDogBasicTest, StartStopTest) {
@@ -232,4 +275,5 @@ TEST(WatchDogTimeTest, AtomicIsAtomicTest) {
   ASSERT_EQ(atomic_time.is_lock_free(), true);
 }
 
-} // Server
+} // namespace Server
+} // namespace Envoy

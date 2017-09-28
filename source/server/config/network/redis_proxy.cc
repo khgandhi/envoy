@@ -3,29 +3,28 @@
 #include <memory>
 #include <string>
 
+#include "envoy/registry/registry.h"
+
 #include "common/redis/codec_impl.h"
 #include "common/redis/command_splitter_impl.h"
 #include "common/redis/conn_pool_impl.h"
 #include "common/redis/proxy_filter.h"
 
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
-NetworkFilterFactoryCb RedisProxyFilterConfigFactory::tryCreateFilterFactory(
-    NetworkFilterType type, const std::string& name, const Json::Object& config,
-    Server::Instance& server) {
-  if (type != NetworkFilterType::Read || name != "redis_proxy") {
-    return nullptr;
-  }
-
-  Redis::ProxyFilterConfigSharedPtr filter_config(
-      std::make_shared<Redis::ProxyFilterConfig>(config, server.clusterManager(), server.stats()));
+NetworkFilterFactoryCb
+RedisProxyFilterConfigFactory::createFilterFactory(const Json::Object& config,
+                                                   FactoryContext& context) {
+  Redis::ProxyFilterConfigSharedPtr filter_config(std::make_shared<Redis::ProxyFilterConfig>(
+      config, context.clusterManager(), context.scope()));
   Redis::ConnPool::InstancePtr conn_pool(
-      new Redis::ConnPool::InstanceImpl(filter_config->clusterName(), server.clusterManager(),
+      new Redis::ConnPool::InstanceImpl(filter_config->clusterName(), context.clusterManager(),
                                         Redis::ConnPool::ClientFactoryImpl::instance_,
-                                        server.threadLocal(), *config.getObject("conn_pool")));
+                                        context.threadLocal(), *config.getObject("conn_pool")));
   std::shared_ptr<Redis::CommandSplitter::Instance> splitter(
-      new Redis::CommandSplitter::InstanceImpl(std::move(conn_pool), server.stats(),
+      new Redis::CommandSplitter::InstanceImpl(std::move(conn_pool), context.scope(),
                                                filter_config->statPrefix()));
   return [splitter, filter_config](Network::FilterManager& filter_manager) -> void {
     Redis::DecoderFactoryImpl factory;
@@ -35,9 +34,11 @@ NetworkFilterFactoryCb RedisProxyFilterConfigFactory::tryCreateFilterFactory(
 }
 
 /**
- * Static registration for the redis filter. @see RegisterNetworkFilterConfigFactory.
+ * Static registration for the redis filter. @see RegisterFactory.
  */
-static RegisterNetworkFilterConfigFactory<RedisProxyFilterConfigFactory> registered_;
+static Registry::RegisterFactory<RedisProxyFilterConfigFactory, NamedNetworkFilterConfigFactory>
+    registered_;
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

@@ -10,6 +10,7 @@
 #include "common/common/empty_string.h"
 #include "common/upstream/upstream_impl.h"
 
+namespace Envoy {
 namespace Upstream {
 
 /**
@@ -27,9 +28,10 @@ namespace Upstream {
  */
 class LogicalDnsCluster : public ClusterImplBase {
 public:
-  LogicalDnsCluster(const Json::Object& config, Runtime::Loader& runtime, Stats::Store& stats,
-                    Ssl::ContextManager& ssl_context_manager, Network::DnsResolver& dns_resolver,
-                    ThreadLocal::Instance& tls, Event::Dispatcher& dispatcher);
+  LogicalDnsCluster(const envoy::api::v2::Cluster& cluster, Runtime::Loader& runtime,
+                    Stats::Store& stats, Ssl::ContextManager& ssl_context_manager,
+                    Network::DnsResolverSharedPtr dns_resolver, ThreadLocal::SlotAllocator& tls,
+                    ClusterManager& cm, Event::Dispatcher& dispatcher, bool added_via_api);
 
   ~LogicalDnsCluster();
 
@@ -48,7 +50,9 @@ private:
   struct LogicalHost : public HostImpl {
     LogicalHost(ClusterInfoConstSharedPtr cluster, const std::string& hostname,
                 Network::Address::InstanceConstSharedPtr address, LogicalDnsCluster& parent)
-        : HostImpl(cluster, hostname, address, false, 1, ""), parent_(parent) {}
+        : HostImpl(cluster, hostname, address, envoy::api::v2::Metadata::default_instance(), 1,
+                   envoy::api::v2::Locality().default_instance()),
+          parent_(parent) {}
 
     // Upstream::Host
     CreateConnectionData createConnection(Event::Dispatcher& dispatcher) const override;
@@ -63,32 +67,37 @@ private:
 
     // Upstream:HostDescription
     bool canary() const override { return false; }
+    const envoy::api::v2::Metadata& metadata() const override {
+      return envoy::api::v2::Metadata::default_instance();
+    }
     const ClusterInfo& cluster() const override { return logical_host_->cluster(); }
-    Outlier::DetectorHostSink& outlierDetector() const override {
+    HealthCheckHostMonitor& healthChecker() const override {
+      return logical_host_->healthChecker();
+    }
+    Outlier::DetectorHostMonitor& outlierDetector() const override {
       return logical_host_->outlierDetector();
     }
     const HostStats& stats() const override { return logical_host_->stats(); }
     const std::string& hostname() const override { return logical_host_->hostname(); }
     Network::Address::InstanceConstSharedPtr address() const override { return address_; }
-    const std::string& zone() const override { return EMPTY_STRING; }
+    const envoy::api::v2::Locality& locality() const override {
+      return envoy::api::v2::Locality().default_instance();
+    }
 
     Network::Address::InstanceConstSharedPtr address_;
     HostConstSharedPtr logical_host_;
   };
 
   struct PerThreadCurrentHostData : public ThreadLocal::ThreadLocalObject {
-    // ThreadLocal::ThreadLocalObject
-    void shutdown() override {}
-
     Network::Address::InstanceConstSharedPtr current_resolved_address_;
   };
 
   void startResolve();
 
-  Network::DnsResolver& dns_resolver_;
+  Network::DnsResolverSharedPtr dns_resolver_;
   const std::chrono::milliseconds dns_refresh_rate_ms_;
-  ThreadLocal::Instance& tls_;
-  uint32_t tls_slot_;
+  Network::DnsLookupFamily dns_lookup_family_;
+  ThreadLocal::SlotPtr tls_;
   std::function<void()> initialize_callback_;
   // Set once the first resolve completes.
   bool initialized_;
@@ -100,4 +109,5 @@ private:
   Network::ActiveDnsQuery* active_dns_query_{};
 };
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

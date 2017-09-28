@@ -4,12 +4,14 @@
 #include <string>
 #include <vector>
 
+#include "common/config/utility.h"
 #include "common/filesystem/filesystem_impl.h"
 #include "common/http/message_impl.h"
-#include "common/json/json_loader.h"
 #include "common/network/utility.h"
-#include "common/upstream/sds.h"
+#include "common/protobuf/protobuf.h"
+#include "common/upstream/eds.h"
 
+#include "test/common/upstream/utility.h"
 #include "test/mocks/local_info/mocks.h"
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/ssl/mocks.h"
@@ -18,22 +20,25 @@
 #include "test/test_common/printers.h"
 #include "test/test_common/utility.h"
 
+#include "api/base.pb.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::DoAll;
+using testing::InSequence;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 using testing::SaveArg;
 using testing::WithArg;
+using testing::_;
 
+namespace Envoy {
 namespace Upstream {
 
 class SdsTest : public testing::Test {
 protected:
-  SdsTest() : sds_config_{"sds", std::chrono::milliseconds(30000)}, request_(&cm_.async_client_) {
+  SdsTest() : request_(&cm_.async_client_) {
     std::string raw_config = R"EOF(
     {
       "name": "name",
@@ -44,12 +49,14 @@ protected:
     }
     )EOF";
 
-    Json::ObjectPtr config = Json::Factory::loadFromString(raw_config);
-
     timer_ = new Event::MockTimer(&dispatcher_);
     local_info_.zone_name_ = "us-east-1a";
-    cluster_.reset(new SdsClusterImpl(*config, runtime_, stats_, ssl_context_manager_, sds_config_,
-                                      local_info_, cm_, dispatcher_, random_));
+    envoy::api::v2::ConfigSource eds_config;
+    eds_config.mutable_api_config_source()->add_cluster_name("sds");
+    eds_config.mutable_api_config_source()->mutable_refresh_delay()->set_seconds(1);
+    sds_cluster_ = parseSdsClusterFromJson(raw_config, eds_config);
+    cluster_.reset(new EdsClusterImpl(sds_cluster_, runtime_, stats_, ssl_context_manager_,
+                                      local_info_, cm_, dispatcher_, random_, false));
     EXPECT_EQ(Cluster::InitializePhase::Secondary, cluster_->initializePhase());
   }
 
@@ -65,7 +72,7 @@ protected:
 
   uint64_t numHealthy() {
     uint64_t healthy = 0;
-    for (HostSharedPtr host : cluster_->hosts()) {
+    for (const HostSharedPtr& host : cluster_->hosts()) {
       if (host->healthy()) {
         healthy++;
       }
@@ -95,10 +102,10 @@ protected:
 
   Stats::IsolatedStoreImpl stats_;
   Ssl::MockContextManager ssl_context_manager_;
-  SdsConfig sds_config_;
-  MockClusterManager cm_;
+  envoy::api::v2::Cluster sds_cluster_;
+  NiceMock<MockClusterManager> cm_;
   Event::MockDispatcher dispatcher_;
-  std::unique_ptr<SdsClusterImpl> cluster_;
+  std::shared_ptr<EdsClusterImpl> cluster_;
   Event::MockTimer* timer_;
   Http::AsyncClient::Callbacks* callbacks_;
   ReadyWatcher membership_updated_;
@@ -122,13 +129,14 @@ TEST_F(SdsTest, PoolFailure) {
 }
 
 TEST_F(SdsTest, NoHealthChecker) {
+  InSequence s;
   setupRequest();
   cluster_->initialize();
 
-  EXPECT_CALL(membership_updated_, ready()).Times(3);
   cluster_->addMemberUpdateCb(
-      [&](const std::vector<HostSharedPtr>&, const std::vector<HostSharedPtr>&)
-          -> void { membership_updated_.ready(); });
+      [&](const std::vector<HostSharedPtr>&, const std::vector<HostSharedPtr>&) -> void {
+        membership_updated_.ready();
+      });
   cluster_->setInitializedCb([&]() -> void { membership_updated_.ready(); });
 
   Http::MessagePtr message(new Http::ResponseMessageImpl(
@@ -136,8 +144,10 @@ TEST_F(SdsTest, NoHealthChecker) {
   message->body().reset(new Buffer::OwnedImpl(Filesystem::fileReadToEnd(
       TestEnvironment::runfilesPath("test/common/upstream/test_data/sds_response.json"))));
 
+  EXPECT_CALL(membership_updated_, ready()).Times(2);
   EXPECT_CALL(*timer_, enableTimer(_));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("hash_5f3725fa79001155", cluster_->versionInfo());
   EXPECT_EQ(13UL, cluster_->hosts().size());
   EXPECT_EQ(13UL, cluster_->healthyHosts().size());
   EXPECT_EQ(13UL, cluster_->info()->stats().membership_healthy_.value());
@@ -151,7 +161,7 @@ TEST_F(SdsTest, NoHealthChecker) {
 
   HostSharedPtr canary_host = findHost("10.0.16.43");
   EXPECT_TRUE(canary_host->canary());
-  EXPECT_EQ("us-east-1d", canary_host->zone());
+  EXPECT_EQ("us-east-1d", canary_host->locality().zone());
   EXPECT_EQ(40U, canary_host->weight());
   EXPECT_EQ(90UL, cluster_->info()->stats().max_host_weight_.value());
 
@@ -164,12 +174,14 @@ TEST_F(SdsTest, NoHealthChecker) {
   message->body().reset(
       new Buffer::OwnedImpl(Filesystem::fileReadToEnd(TestEnvironment::runfilesPath(
           "test/common/upstream/test_data/sds_response_weight_change.json"))));
+  EXPECT_CALL(membership_updated_, ready());
   EXPECT_CALL(*timer_, enableTimer(_));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("hash_2d1af371bb73a287", cluster_->versionInfo());
   EXPECT_EQ(13UL, cluster_->hosts().size());
   EXPECT_EQ(canary_host, findHost("10.0.16.43"));
   EXPECT_TRUE(canary_host->canary());
-  EXPECT_EQ("us-east-1d", canary_host->zone());
+  EXPECT_EQ("us-east-1d", canary_host->locality().zone());
   EXPECT_EQ(50U, canary_host->weight());
   EXPECT_EQ(50UL, cluster_->info()->stats().max_host_weight_.value());
   EXPECT_EQ(3UL, cluster_->healthyHostsPerZone().size());
@@ -199,6 +211,7 @@ TEST_F(SdsTest, NoHealthChecker) {
   message.reset(new Http::ResponseMessageImpl(
       Http::HeaderMapPtr{new Http::TestHeaderMapImpl{{":status", "503"}}}));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("hash_2d1af371bb73a287", cluster_->versionInfo());
   EXPECT_EQ(13UL, cluster_->hosts().size());
   EXPECT_EQ(50U, canary_host->weight());
   EXPECT_EQ(50UL, cluster_->info()->stats().max_host_weight_.value());
@@ -209,10 +222,11 @@ TEST_F(SdsTest, NoHealthChecker) {
 }
 
 TEST_F(SdsTest, HealthChecker) {
-  MockHealthChecker* health_checker = new MockHealthChecker();
+  InSequence s;
+  std::shared_ptr<MockHealthChecker> health_checker(new MockHealthChecker());
   EXPECT_CALL(*health_checker, start());
-  EXPECT_CALL(*health_checker, addHostCheckCompleteCb(_)).Times(2);
-  cluster_->setHealthChecker(HealthCheckerPtr{health_checker});
+  EXPECT_CALL(*health_checker, addHostCheckCompleteCb(_));
+  cluster_->setHealthChecker(health_checker);
   cluster_->setInitializedCb([&]() -> void { membership_updated_.ready(); });
 
   setupRequest();
@@ -225,8 +239,10 @@ TEST_F(SdsTest, HealthChecker) {
   message->body().reset(new Buffer::OwnedImpl(Filesystem::fileReadToEnd(
       TestEnvironment::runfilesPath("test/common/upstream/test_data/sds_response.json"))));
 
+  EXPECT_CALL(*health_checker, addHostCheckCompleteCb(_));
   EXPECT_CALL(*timer_, enableTimer(_));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("hash_5f3725fa79001155", cluster_->versionInfo());
   EXPECT_EQ(13UL, cluster_->hosts().size());
   EXPECT_EQ(0UL, cluster_->healthyHosts().size());
   EXPECT_EQ(0UL, cluster_->info()->stats().membership_healthy_.value());
@@ -254,6 +270,7 @@ TEST_F(SdsTest, HealthChecker) {
   EXPECT_CALL(membership_updated_, ready());
   cluster_->hosts()[0]->healthFlagClear(Host::HealthFlag::FAILED_ACTIVE_HC);
   health_checker->runCallbacks(cluster_->hosts()[0], true);
+  EXPECT_EQ("hash_5f3725fa79001155", cluster_->versionInfo());
   EXPECT_EQ(13UL, cluster_->healthyHosts().size());
   EXPECT_EQ(13UL, cluster_->info()->stats().membership_healthy_.value());
   EXPECT_EQ(3UL, cluster_->healthyHostsPerZone().size());
@@ -271,6 +288,7 @@ TEST_F(SdsTest, HealthChecker) {
   message->body().reset(new Buffer::OwnedImpl(Filesystem::fileReadToEnd(
       TestEnvironment::runfilesPath("test/common/upstream/test_data/sds_response_2.json"))));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("hash_398882981ada7c10", cluster_->versionInfo());
   EXPECT_EQ(14UL, cluster_->hosts().size());
   EXPECT_EQ(13UL, cluster_->healthyHosts().size());
   EXPECT_EQ(13UL, cluster_->info()->stats().membership_healthy_.value());
@@ -291,6 +309,7 @@ TEST_F(SdsTest, HealthChecker) {
   message->body().reset(new Buffer::OwnedImpl(Filesystem::fileReadToEnd(
       TestEnvironment::runfilesPath("test/common/upstream/test_data/sds_response_2.json"))));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("hash_398882981ada7c10", cluster_->versionInfo());
   EXPECT_EQ(13UL, cluster_->hosts().size());
   EXPECT_EQ(12UL, cluster_->healthyHosts().size());
   EXPECT_EQ(12UL, cluster_->info()->stats().membership_healthy_.value());
@@ -310,6 +329,7 @@ TEST_F(SdsTest, HealthChecker) {
   message->body().reset(new Buffer::OwnedImpl(Filesystem::fileReadToEnd(
       TestEnvironment::runfilesPath("test/common/upstream/test_data/sds_response_3.json"))));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("hash_b9f8f43f828a3b25", cluster_->versionInfo());
   EXPECT_EQ(13UL, cluster_->hosts().size());
   EXPECT_EQ(12UL, cluster_->healthyHosts().size());
   EXPECT_EQ(12UL, cluster_->info()->stats().membership_healthy_.value());
@@ -336,6 +356,7 @@ TEST_F(SdsTest, Failure) {
 
   EXPECT_CALL(*timer_, enableTimer(_));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("", cluster_->versionInfo());
 
   EXPECT_EQ(1UL, cluster_->info()->stats().update_failure_.value());
 }
@@ -354,8 +375,10 @@ TEST_F(SdsTest, FailureArray) {
 
   EXPECT_CALL(*timer_, enableTimer(_));
   callbacks_->onSuccess(std::move(message));
+  EXPECT_EQ("", cluster_->versionInfo());
 
   EXPECT_EQ(1UL, cluster_->info()->stats().update_failure_.value());
 }
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

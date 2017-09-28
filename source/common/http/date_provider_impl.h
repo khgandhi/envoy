@@ -4,12 +4,14 @@
 #include <string>
 
 #include "envoy/event/dispatcher.h"
+#include "envoy/singleton/instance.h"
 #include "envoy/thread_local/thread_local.h"
 
 #include "common/common/utility.h"
 
 #include "date_provider.h"
 
+namespace Envoy {
 namespace Http {
 
 /**
@@ -24,9 +26,9 @@ protected:
  * A caching thread local provider. This implementation updates the date string every 500ms and
  * caches on each thread.
  */
-class TlsCachingDateProviderImpl : public DateProviderImplBase {
+class TlsCachingDateProviderImpl : public DateProviderImplBase, public Singleton::Instance {
 public:
-  TlsCachingDateProviderImpl(Event::Dispatcher& dispatcher, ThreadLocal::Instance& tls);
+  TlsCachingDateProviderImpl(Event::Dispatcher& dispatcher, ThreadLocal::SlotAllocator& tls);
 
   // Http::DateProvider
   void setDateHeader(HeaderMap& headers) override;
@@ -35,16 +37,12 @@ private:
   struct ThreadLocalCachedDate : public ThreadLocal::ThreadLocalObject {
     ThreadLocalCachedDate(const std::string& date_string) : date_string_(date_string) {}
 
-    // ThreadLocal::ThreadLocalObject
-    void shutdown() override {}
-
     const std::string date_string_;
   };
 
   void onRefreshDate();
 
-  ThreadLocal::Instance& tls_;
-  uint32_t tls_slot_;
+  ThreadLocal::SlotPtr tls_;
   Event::TimerPtr refresh_timer_;
 };
 
@@ -57,4 +55,5 @@ public:
   void setDateHeader(HeaderMap& headers) override;
 };
 
-} // Http
+} // namespace Http
+} // namespace Envoy

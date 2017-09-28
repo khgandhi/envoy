@@ -2,22 +2,24 @@
 
 #include <string>
 
-#include "envoy/server/instance.h"
+#include "envoy/server/filter_config.h"
 
-#include "server/config/network/http_connection_manager.h"
+#include "common/config/well_known_names.h"
 
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
 /**
- * Config registration for the grpc HTTP1 bridge filter. @see HttpFilterConfigFactory.
+ * Config registration for the grpc HTTP1 bridge filter. @see NamedHttpFilterConfigFactory.
  */
-class GrpcHttp1BridgeFilterConfig : public HttpFilterConfigFactory {
+class GrpcHttp1BridgeFilterConfig : public NamedHttpFilterConfigFactory {
 public:
-  HttpFilterFactoryCb tryCreateFilterFactory(HttpFilterType type, const std::string& name,
-                                             const Json::Object&, const std::string&,
-                                             Server::Instance& server) override;
+  HttpFilterFactoryCb createFilterFactory(const Json::Object&, const std::string&,
+                                          FactoryContext& context) override;
+  std::string name() override { return Config::HttpFilterNames::get().GRPC_HTTP1_BRIDGE; }
 };
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

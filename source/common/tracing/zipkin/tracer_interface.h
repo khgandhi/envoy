@@ -2,6 +2,7 @@
 
 #include "envoy/common/pure.h"
 
+namespace Envoy {
 namespace Zipkin {
 
 class Span;
@@ -27,4 +28,5 @@ public:
    */
   virtual void reportSpan(Span&& span) PURE;
 };
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

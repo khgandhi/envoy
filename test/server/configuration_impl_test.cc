@@ -2,12 +2,15 @@
 #include <list>
 #include <string>
 
+#include "common/config/well_known_names.h"
+#include "common/upstream/cluster_manager_impl.h"
+
 #include "server/configuration_impl.h"
 
 #include "test/mocks/common.h"
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/server/mocks.h"
-#include "test/test_common/environment.h"
+#include "test/test_common/utility.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -16,12 +19,13 @@ using testing::InSequence;
 using testing::Return;
 using testing::ReturnRef;
 
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
 TEST(FilterChainUtility, buildFilterChain) {
   Network::MockConnection connection;
-  std::list<NetworkFilterFactoryCb> factories;
+  std::vector<NetworkFilterFactoryCb> factories;
   ReadyWatcher watcher;
   NetworkFilterFactoryCb factory = [&](Network::FilterManager&) -> void { watcher.ready(); };
   factories.push_back(factory);
@@ -34,32 +38,33 @@ TEST(FilterChainUtility, buildFilterChain) {
 
 TEST(FilterChainUtility, buildFilterChainFailWithBadFilters) {
   Network::MockConnection connection;
-  std::list<NetworkFilterFactoryCb> factories;
+  std::vector<NetworkFilterFactoryCb> factories;
   EXPECT_CALL(connection, initializeReadFilters()).WillOnce(Return(false));
   EXPECT_EQ(FilterChainUtility::buildFilterChain(connection, factories), false);
 }
 
-TEST(ConfigurationImplTest, DefaultStatsFlushInterval) {
-  std::string json = R"EOF(
-  {
-    "listeners": [],
+class ConfigurationImplTest : public testing::Test {
+protected:
+  ConfigurationImplTest()
+      : cluster_manager_factory_(server_.runtime(), server_.stats(), server_.threadLocal(),
+                                 server_.random(), server_.dnsResolver(),
+                                 server_.sslContextManager(), server_.dispatcher(),
+                                 server_.localInfo()) {}
 
-    "cluster_manager": {
-      "clusters": []
-    }
-  }
-  )EOF";
+  NiceMock<Server::MockInstance> server_;
+  Upstream::ProdClusterManagerFactory cluster_manager_factory_;
+};
 
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
+TEST_F(ConfigurationImplTest, DefaultStatsFlushInterval) {
+  envoy::api::v2::Bootstrap bootstrap;
 
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  config.initialize(*loader);
+  MainImpl config;
+  config.initialize(bootstrap, server_, cluster_manager_factory_);
 
   EXPECT_EQ(std::chrono::milliseconds(5000), config.statsFlushInterval());
 }
 
-TEST(ConfigurationImplTest, CustomStatsFlushInterval) {
+TEST_F(ConfigurationImplTest, CustomStatsFlushInterval) {
   std::string json = R"EOF(
   {
     "listeners": [],
@@ -68,126 +73,22 @@ TEST(ConfigurationImplTest, CustomStatsFlushInterval) {
 
     "cluster_manager": {
       "clusters": []
-    }
+    },
+
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
   }
   )EOF";
 
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
 
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  config.initialize(*loader);
+  MainImpl config;
+  config.initialize(bootstrap, server_, cluster_manager_factory_);
 
   EXPECT_EQ(std::chrono::milliseconds(500), config.statsFlushInterval());
 }
 
-TEST(ConfigurationImplTest, EmptyFilter) {
-  std::string json = R"EOF(
-  {
-    "listeners" : [
-      {
-        "address": "tcp://127.0.0.1:1234",
-        "filters": []
-      }
-    ],
-    "cluster_manager": {
-      "clusters": []
-    }
-  }
-  )EOF";
-
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  config.initialize(*loader);
-
-  EXPECT_EQ(1U, config.listeners().size());
-}
-
-TEST(ConfigurationImplTest, DefaultListenerPerConnectionBufferLimit) {
-  std::string json = R"EOF(
-  {
-    "listeners" : [
-      {
-        "address": "tcp://127.0.0.1:1234",
-        "filters": []
-      }
-    ],
-    "cluster_manager": {
-      "clusters": []
-    }
-  }
-  )EOF";
-
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  config.initialize(*loader);
-
-  EXPECT_EQ(1024 * 1024U, config.listeners().back()->perConnectionBufferLimitBytes());
-}
-
-TEST(ConfigurationImplTest, SetListenerPerConnectionBufferLimit) {
-  std::string json = R"EOF(
-  {
-    "listeners" : [
-      {
-        "address": "tcp://127.0.0.1:1234",
-        "filters": [],
-        "per_connection_buffer_limit_bytes": 8192
-      }
-    ],
-    "cluster_manager": {
-      "clusters": []
-    }
-  }
-  )EOF";
-
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  config.initialize(*loader);
-
-  EXPECT_EQ(8192U, config.listeners().back()->perConnectionBufferLimitBytes());
-}
-
-TEST(ConfigurationImplTest, VerifySubjectAltNameConfig) {
-  std::string json = R"EOF(
-  {
-    "listeners" : [
-      {
-        "address": "tcp://127.0.0.1:1234",
-        "filters" : [],
-        "ssl_context" : {
-          "cert_chain_file" : "{{ test_rundir }}/test/common/ssl/test_data/san_uri_cert.pem",
-          "private_key_file" : "{{ test_rundir }}/test/common/ssl/test_data/san_uri_key.pem",
-          "verify_subject_alt_name" : [
-            "localhost",
-            "127.0.0.1"
-          ]
-        }
-      }
-    ],
-    "cluster_manager": {
-      "clusters": []
-    }
-  }
-  )EOF";
-
-  Json::ObjectPtr loader = TestEnvironment::jsonLoadFromString(json);
-
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  config.initialize(*loader);
-
-  EXPECT_TRUE(config.listeners().back()->sslContext() != nullptr);
-}
-
-TEST(ConfigurationImplTest, SetUpstreamClusterPerConnectionBufferLimit) {
-  std::string json = R"EOF(
+TEST_F(ConfigurationImplTest, SetUpstreamClusterPerConnectionBufferLimit) {
+  const std::string json = R"EOF(
   {
     "listeners" : [],
     "cluster_manager": {
@@ -203,15 +104,15 @@ TEST(ConfigurationImplTest, SetUpstreamClusterPerConnectionBufferLimit) {
           ]
         }
       ]
-    }
+    },
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
   }
   )EOF";
 
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
 
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  config.initialize(*loader);
+  MainImpl config;
+  config.initialize(bootstrap, server_, cluster_manager_factory_);
 
   ASSERT_EQ(1U, config.clusterManager().clusters().count("test_cluster"));
   EXPECT_EQ(8192U, config.clusterManager()
@@ -220,61 +121,10 @@ TEST(ConfigurationImplTest, SetUpstreamClusterPerConnectionBufferLimit) {
                        ->second.get()
                        .info()
                        ->perConnectionBufferLimitBytes());
-  server.thread_local_.shutdownThread();
+  server_.thread_local_.shutdownThread();
 }
 
-TEST(ConfigurationImplTest, BadListenerConfig) {
-  std::string json = R"EOF(
-  {
-    "listeners" : [
-      {
-        "address": "tcp://127.0.0.1:1234",
-        "filters": [],
-        "test": "a"
-      }
-    ],
-    "cluster_manager": {
-      "clusters": []
-    }
-  }
-  )EOF";
-
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  EXPECT_THROW(config.initialize(*loader), Json::Exception);
-}
-
-TEST(ConfigurationImplTest, BadFilterConfig) {
-  std::string json = R"EOF(
-  {
-    "listeners" : [
-      {
-        "address": "tcp://127.0.0.1:1234",
-        "filters": [
-          {
-            "type" : "type",
-            "name" : "name",
-            "config" : {}
-          }
-        ]
-      }
-    ],
-    "cluster_manager": {
-      "clusters": []
-    }
-  }
-  )EOF";
-
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
-
-  NiceMock<Server::MockInstance> server;
-  MainImpl config(server);
-  EXPECT_THROW(config.initialize(*loader), Json::Exception);
-}
-
-TEST(ConfigurationImplTest, ServiceClusterNotSetWhenLSTracing) {
+TEST_F(ConfigurationImplTest, ServiceClusterNotSetWhenLSTracing) {
   std::string json = R"EOF(
   {
     "listeners" : [
@@ -291,23 +141,24 @@ TEST(ConfigurationImplTest, ServiceClusterNotSetWhenLSTracing) {
         "driver": {
           "type": "lightstep",
           "config": {
+            "collector_cluster": "cluster_0",
             "access_token_file": "/etc/envoy/envoy.cfg"
           }
         }
       }
-    }
+    },
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
   }
   )EOF";
 
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
 
-  NiceMock<Server::MockInstance> server;
-  server.local_info_.cluster_name_ = "";
-  MainImpl config(server);
-  EXPECT_THROW(config.initialize(*loader), EnvoyException);
+  server_.local_info_.cluster_name_ = "";
+  MainImpl config;
+  EXPECT_THROW(config.initialize(bootstrap, server_, cluster_manager_factory_), EnvoyException);
 }
 
-TEST(ConfigurationImplTest, NullTracerSetWhenTracingConfigurationAbsent) {
+TEST_F(ConfigurationImplTest, NullTracerSetWhenTracingConfigurationAbsent) {
   std::string json = R"EOF(
   {
     "listeners" : [
@@ -318,21 +169,21 @@ TEST(ConfigurationImplTest, NullTracerSetWhenTracingConfigurationAbsent) {
     ],
     "cluster_manager": {
       "clusters": []
-    }
+    },
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
   }
   )EOF";
 
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
 
-  NiceMock<Server::MockInstance> server;
-  server.local_info_.cluster_name_ = "";
-  MainImpl config(server);
-  config.initialize(*loader);
+  server_.local_info_.cluster_name_ = "";
+  MainImpl config;
+  config.initialize(bootstrap, server_, cluster_manager_factory_);
 
   EXPECT_NE(nullptr, dynamic_cast<Tracing::HttpNullTracer*>(&config.httpTracer()));
 }
 
-TEST(ConfigurationImplTest, NullTracerSetWhenHttpKeyAbsentFromTracerConfiguration) {
+TEST_F(ConfigurationImplTest, NullTracerSetWhenHttpKeyAbsentFromTracerConfiguration) {
   std::string json = R"EOF(
   {
     "listeners" : [
@@ -349,23 +200,137 @@ TEST(ConfigurationImplTest, NullTracerSetWhenHttpKeyAbsentFromTracerConfiguratio
         "driver": {
           "type": "lightstep",
           "config": {
+            "collector_cluster": "cluster_0",
             "access_token_file": "/etc/envoy/envoy.cfg"
           }
         }
       }
-    }
+    },
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
   }
   )EOF";
 
-  Json::ObjectPtr loader = Json::Factory::loadFromString(json);
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
 
-  NiceMock<Server::MockInstance> server;
-  server.local_info_.cluster_name_ = "";
-  MainImpl config(server);
-  config.initialize(*loader);
+  server_.local_info_.cluster_name_ = "";
+  MainImpl config;
+  config.initialize(bootstrap, server_, cluster_manager_factory_);
 
   EXPECT_NE(nullptr, dynamic_cast<Tracing::HttpNullTracer*>(&config.httpTracer()));
 }
 
-} // Configuration
-} // Server
+TEST_F(ConfigurationImplTest, ConfigurationFailsWhenInvalidTracerSpecified) {
+  std::string json = R"EOF(
+  {
+    "listeners" : [
+      {
+        "address": "tcp://127.0.0.1:1234",
+        "filters": []
+      }
+    ],
+    "cluster_manager": {
+      "clusters": []
+    },
+    "tracing": {
+      "http": {
+        "driver": {
+          "type": "lightstep",
+          "config": {
+            "collector_cluster": "cluster_0",
+            "access_token_file": "/etc/envoy/envoy.cfg"
+          }
+        }
+      }
+    },
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
+  }
+  )EOF";
+
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
+  bootstrap.mutable_tracing()->mutable_http()->set_name("invalid");
+  MainImpl config;
+  EXPECT_THROW_WITH_MESSAGE(config.initialize(bootstrap, server_, cluster_manager_factory_),
+                            EnvoyException,
+                            "Didn't find a registered implementation for name: 'invalid'");
+}
+
+TEST_F(ConfigurationImplTest, ProtoSpecifiedStatsSink) {
+  std::string json = R"EOF(
+  {
+    "listeners": [],
+
+    "cluster_manager": {
+      "clusters": []
+    },
+
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
+  }
+  )EOF";
+
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
+
+  auto& sink = *bootstrap.mutable_stats_sinks()->Add();
+  sink.set_name(Config::StatsSinkNames::get().STATSD);
+  auto& field_map = *sink.mutable_config()->mutable_fields();
+  field_map["tcp_cluster_name"].set_string_value("fake_cluster");
+
+  MainImpl config;
+  config.initialize(bootstrap, server_, cluster_manager_factory_);
+
+  EXPECT_EQ(1, config.statsSinks().size());
+}
+
+TEST_F(ConfigurationImplTest, StatsSinkWithInvalidName) {
+  std::string json = R"EOF(
+  {
+    "listeners": [],
+
+    "cluster_manager": {
+      "clusters": []
+    },
+
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
+  }
+  )EOF";
+
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
+
+  envoy::api::v2::StatsSink& sink = *bootstrap.mutable_stats_sinks()->Add();
+  sink.set_name("envoy.invalid");
+  auto& field_map = *sink.mutable_config()->mutable_fields();
+  field_map["tcp_cluster_name"].set_string_value("fake_cluster");
+
+  MainImpl config;
+  EXPECT_THROW_WITH_MESSAGE(config.initialize(bootstrap, server_, cluster_manager_factory_),
+                            EnvoyException,
+                            "Didn't find a registered implementation for name: 'envoy.invalid'");
+}
+
+TEST_F(ConfigurationImplTest, StatsSinkWithNoName) {
+  std::string json = R"EOF(
+  {
+    "listeners": [],
+
+    "cluster_manager": {
+      "clusters": []
+    },
+
+    "admin": {"access_log_path": "/dev/null", "address": "tcp://1.2.3.4:5678"}
+  }
+  )EOF";
+
+  envoy::api::v2::Bootstrap bootstrap = TestUtility::parseBootstrapFromJson(json);
+
+  auto& sink = *bootstrap.mutable_stats_sinks()->Add();
+  auto& field_map = *sink.mutable_config()->mutable_fields();
+  field_map["tcp_cluster_name"].set_string_value("fake_cluster");
+
+  MainImpl config;
+  EXPECT_THROW_WITH_MESSAGE(config.initialize(bootstrap, server_, cluster_manager_factory_),
+                            EnvoyException,
+                            "Provided name for static registration lookup was empty.");
+}
+
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

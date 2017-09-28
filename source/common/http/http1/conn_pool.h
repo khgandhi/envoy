@@ -15,6 +15,7 @@
 #include "common/http/codec_client.h"
 #include "common/http/codec_wrappers.h"
 
+namespace Envoy {
 namespace Http {
 namespace Http1 {
 
@@ -56,6 +57,8 @@ protected:
 
     // Http::StreamCallbacks
     void onResetStream(StreamResetReason) override { parent_.parent_.onDownstreamReset(parent_); }
+    void onAboveWriteBufferHighWatermark() override {}
+    void onBelowWriteBufferLowWatermark() override {}
 
     ActiveClient& parent_;
     bool encode_complete_{};
@@ -74,7 +77,11 @@ protected:
     void onConnectTimeout();
 
     // Network::ConnectionCallbacks
-    void onEvent(uint32_t events) override { parent_.onConnectionEvent(*this, events); }
+    void onEvent(Network::ConnectionEvent event) override {
+      parent_.onConnectionEvent(*this, event);
+    }
+    void onAboveWriteBufferHighWatermark() override {}
+    void onBelowWriteBufferLowWatermark() override {}
 
     ConnPoolImpl& parent_;
     CodecClientPtr codec_client_;
@@ -107,7 +114,7 @@ protected:
   virtual CodecClientPtr createCodecClient(Upstream::Host::CreateConnectionData& data) PURE;
   void checkForDrained();
   void createNewConnection();
-  void onConnectionEvent(ActiveClient& client, uint32_t events);
+  void onConnectionEvent(ActiveClient& client, Network::ConnectionEvent event);
   void onDownstreamReset(ActiveClient& client);
   void onPendingRequestCancel(PendingRequest& request);
   void onResponseComplete(ActiveClient& client);
@@ -136,5 +143,6 @@ public:
   CodecClientPtr createCodecClient(Upstream::Host::CreateConnectionData& data) override;
 };
 
-} // Http1
-} // Http
+} // namespace Http1
+} // namespace Http
+} // namespace Envoy

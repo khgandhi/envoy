@@ -6,7 +6,7 @@
 #include "envoy/event/dispatcher.h"
 #include "envoy/event/timer.h"
 #include "envoy/http/header_map.h"
-#include "envoy/server/instance.h"
+#include "envoy/registry/registry.h"
 
 #include "common/common/assert.h"
 #include "common/common/enum_to_int.h"
@@ -17,21 +17,18 @@
 #include "common/json/config_schemas.h"
 #include "common/json/json_loader.h"
 
+#include "server/config/network/http_connection_manager.h"
+
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
 /**
- * Config registration for the health check filter. @see HttpFilterConfigFactory.
+ * Config registration for the health check filter. @see NamedHttpFilterConfigFactory.
  */
-HttpFilterFactoryCb HealthCheckFilterConfig::tryCreateFilterFactory(HttpFilterType type,
-                                                                    const std::string& name,
-                                                                    const Json::Object& config,
-                                                                    const std::string&,
-                                                                    Server::Instance& server) {
-  if (type != HttpFilterType::Both || name != "health_check") {
-    return nullptr;
-  }
-
+HttpFilterFactoryCb HealthCheckFilterConfig::createFilterFactory(const Json::Object& config,
+                                                                 const std::string&,
+                                                                 FactoryContext& context) {
   config.validateSchema(Json::Schema::HEALTH_CHECK_HTTP_FILTER_SCHEMA);
 
   bool pass_through_mode = config.getBoolean("pass_through_mode");
@@ -44,24 +41,24 @@ HttpFilterFactoryCb HealthCheckFilterConfig::tryCreateFilterFactory(HttpFilterTy
 
   HealthCheckCacheManagerSharedPtr cache_manager;
   if (cache_time_ms > 0) {
-    cache_manager.reset(
-        new HealthCheckCacheManager(server.dispatcher(), std::chrono::milliseconds(cache_time_ms)));
+    cache_manager.reset(new HealthCheckCacheManager(context.dispatcher(),
+                                                    std::chrono::milliseconds(cache_time_ms)));
   }
 
-  return [&server, pass_through_mode, cache_manager, hc_endpoint](
-             Http::FilterChainFactoryCallbacks& callbacks) -> void {
+  return [&context, pass_through_mode, cache_manager,
+          hc_endpoint](Http::FilterChainFactoryCallbacks& callbacks) -> void {
     callbacks.addStreamFilter(Http::StreamFilterSharedPtr{
-        new HealthCheckFilter(server, pass_through_mode, cache_manager, hc_endpoint)});
+        new HealthCheckFilter(context, pass_through_mode, cache_manager, hc_endpoint)});
   };
 }
 
 /**
- * Static registration for the health check filter. @see RegisterHttpFilterConfigFactory.
+ * Static registration for the health check filter. @see RegisterFactory.
  */
-static RegisterHttpFilterConfigFactory<HealthCheckFilterConfig> register_;
+static Registry::RegisterFactory<HealthCheckFilterConfig, NamedHttpFilterConfigFactory> register_;
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
 
 HealthCheckCacheManager::HealthCheckCacheManager(Event::Dispatcher& dispatcher,
                                                  std::chrono::milliseconds timeout)
@@ -83,7 +80,7 @@ Http::FilterHeadersStatus HealthCheckFilter::decodeHeaders(Http::HeaderMap& head
 
     // If we are not in pass through mode, we always handle. Otherwise, we handle if the server is
     // in the failed state or if we are using caching and we should use the cached response.
-    if (!pass_through_mode_ || server_.healthCheckFailed() ||
+    if (!pass_through_mode_ || context_.healthCheckFailed() ||
         (cache_manager_ && cache_manager_->useCachedResponseCode())) {
       handling_ = true;
     }
@@ -121,7 +118,10 @@ Http::FilterHeadersStatus HealthCheckFilter::encodeHeaders(Http::HeaderMap& head
           static_cast<Http::Code>(Http::Utility::getResponseStatus(headers)));
     }
 
-    headers.insertEnvoyUpstreamHealthCheckedCluster().value(server_.localInfo().clusterName());
+    headers.insertEnvoyUpstreamHealthCheckedCluster().value(context_.localInfo().clusterName());
+  } else if (context_.healthCheckFailed()) {
+    headers.insertEnvoyImmediateHealthCheckFail().value(
+        Http::Headers::get().EnvoyImmediateHealthCheckFailValues.True);
   }
 
   return Http::FilterHeadersStatus::Continue;
@@ -130,7 +130,7 @@ Http::FilterHeadersStatus HealthCheckFilter::encodeHeaders(Http::HeaderMap& head
 void HealthCheckFilter::onComplete() {
   ASSERT(handling_);
   Http::HeaderMapPtr headers;
-  if (server_.healthCheckFailed()) {
+  if (context_.healthCheckFailed()) {
     callbacks_->requestInfo().setResponseFlag(
         Http::AccessLog::ResponseFlag::FailedLocalHealthCheck);
     headers.reset(new Http::HeaderMapImpl{
@@ -152,3 +152,5 @@ void HealthCheckFilter::onComplete() {
 
   callbacks_->encodeHeaders(std::move(headers), true);
 }
+
+} // namespace Envoy

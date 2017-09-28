@@ -7,6 +7,7 @@
 #include "envoy/common/exception.h"
 #include "envoy/network/connection.h"
 
+namespace Envoy {
 namespace Network {
 
 /**
@@ -56,7 +57,7 @@ public:
  */
 class Listener {
 public:
-  virtual ~Listener(){};
+  virtual ~Listener() {}
 };
 
 typedef std::unique_ptr<Listener> ListenerPtr;
@@ -69,4 +70,5 @@ public:
   CreateListenerException(const std::string& what) : EnvoyException(what) {}
 };
 
-} // Network
+} // namespace Network
+} // namespace Envoy

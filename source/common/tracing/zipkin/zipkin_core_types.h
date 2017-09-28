@@ -10,6 +10,7 @@
 #include "common/tracing/zipkin/tracer_interface.h"
 #include "common/tracing/zipkin/util.h"
 
+namespace Envoy {
 namespace Zipkin {
 
 /**
@@ -138,6 +139,13 @@ public:
    * Sets the annotation's endpoint attribute (move semantics).
    */
   void setEndpoint(const Endpoint&& endpoint) { endpoint_.value(endpoint); }
+
+  /**
+   * Replaces the endpoint's service-name attribute value with the given value.
+   *
+   * @param service_name String with the new service name.
+   */
+  void changeEndpointServiceName(const std::string& service_name);
 
   /**
    * @return the annotation's timestamp attribute
@@ -289,11 +297,6 @@ public:
    * Copy constructor.
    */
   Span(const Span&);
-
-  /**
-   * Assignment operator.
-   */
-  Span& operator=(const Span&);
 
   /**
    * Default constructor. Creates an empty span.
@@ -475,12 +478,22 @@ public:
   int64_t startTime() const { return monotonic_start_time_; }
 
   /**
-    * Serializes the span as a Zipkin-compliant JSON representation as a string.
-    * The resulting JSON string can be used as part of an HTTP POST call to
-    * send the span to Zipkin.
-    *
-    * @return a stringified JSON.
-    */
+   * Replaces the service-name attribute of the span's basic annotations with the provided value.
+   *
+   * This method will operate on all basic annotations that are part of the span when the call
+   * is made.
+   *
+   * @param service_name String to be used as the new service name for all basic annotations
+   */
+  void setServiceName(const std::string& service_name);
+
+  /**
+   * Serializes the span as a Zipkin-compliant JSON representation as a string.
+   * The resulting JSON string can be used as part of an HTTP POST call to
+   * send the span to Zipkin.
+   *
+   * @return a stringified JSON.
+   */
   const std::string toJson() override;
 
   /**
@@ -530,4 +543,5 @@ private:
   int64_t monotonic_start_time_;
   TracerInterface* tracer_;
 };
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

@@ -15,15 +15,16 @@
 #include "common/json/config_schemas.h"
 #include "common/json/json_loader.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 namespace Filter {
 
 TcpProxyConfig::Route::Route(const Json::Object& config) {
   cluster_name_ = config.getString("cluster");
 
   if (config.hasObject("source_ip_list")) {
-    source_ips_ = Network::IpList(config.getStringArray("source_ip_list"));
+    source_ips_ = Network::Address::IpList(config.getStringArray("source_ip_list"));
   }
 
   if (config.hasObject("source_ports")) {
@@ -32,7 +33,7 @@ TcpProxyConfig::Route::Route(const Json::Object& config) {
   }
 
   if (config.hasObject("destination_ip_list")) {
-    destination_ips_ = Network::IpList(config.getStringArray("destination_ip_list"));
+    destination_ips_ = Network::Address::IpList(config.getStringArray("destination_ip_list"));
   }
 
   if (config.hasObject("destination_ports")) {
@@ -42,11 +43,11 @@ TcpProxyConfig::Route::Route(const Json::Object& config) {
 }
 
 TcpProxyConfig::TcpProxyConfig(const Json::Object& config,
-                               Upstream::ClusterManager& cluster_manager, Stats::Store& stats_store)
-    : stats_(generateStats(config.getString("stat_prefix"), stats_store)) {
+                               Upstream::ClusterManager& cluster_manager, Stats::Scope& scope)
+    : stats_(generateStats(config.getString("stat_prefix"), scope)) {
   config.validateSchema(Json::Schema::TCP_PROXY_NETWORK_FILTER_SCHEMA);
 
-  for (const Json::ObjectPtr& route_desc :
+  for (const Json::ObjectSharedPtr& route_desc :
        config.getObject("route_config")->getObjectArray("routes")) {
     routes_.emplace_back(Route(*route_desc));
 
@@ -105,60 +106,123 @@ TcpProxy::~TcpProxy() {
   }
 }
 
-TcpProxyStats TcpProxyConfig::generateStats(const std::string& name, Stats::Store& store) {
+TcpProxyStats TcpProxyConfig::generateStats(const std::string& name, Stats::Scope& scope) {
   std::string final_prefix = fmt::format("tcp.{}.", name);
-  return {ALL_TCP_PROXY_STATS(POOL_COUNTER_PREFIX(store, final_prefix),
-                              POOL_GAUGE_PREFIX(store, final_prefix))};
+  return {ALL_TCP_PROXY_STATS(POOL_COUNTER_PREFIX(scope, final_prefix),
+                              POOL_GAUGE_PREFIX(scope, final_prefix))};
 }
 
 void TcpProxy::initializeReadFilterCallbacks(Network::ReadFilterCallbacks& callbacks) {
   read_callbacks_ = &callbacks;
-  conn_log_info("new tcp proxy session", read_callbacks_->connection());
+  ENVOY_CONN_LOG(info, "new tcp proxy session", read_callbacks_->connection());
   config_->stats().downstream_cx_total_.inc();
   read_callbacks_->connection().addConnectionCallbacks(downstream_callbacks_);
-  read_callbacks_->connection().setBufferStats({config_->stats().downstream_cx_rx_bytes_total_,
-                                                config_->stats().downstream_cx_rx_bytes_buffered_,
-                                                config_->stats().downstream_cx_tx_bytes_total_,
-                                                config_->stats().downstream_cx_tx_bytes_buffered_});
+  read_callbacks_->connection().setConnectionStats(
+      {config_->stats().downstream_cx_rx_bytes_total_,
+       config_->stats().downstream_cx_rx_bytes_buffered_,
+       config_->stats().downstream_cx_tx_bytes_total_,
+       config_->stats().downstream_cx_tx_bytes_buffered_, nullptr});
+}
+
+void TcpProxy::readDisableUpstream(bool disable) {
+  upstream_connection_->readDisable(disable);
+  if (disable) {
+    read_callbacks_->upstreamHost()
+        ->cluster()
+        .stats()
+        .upstream_flow_control_paused_reading_total_.inc();
+  } else {
+    read_callbacks_->upstreamHost()
+        ->cluster()
+        .stats()
+        .upstream_flow_control_resumed_reading_total_.inc();
+  }
+}
+
+void TcpProxy::readDisableDownstream(bool disable) {
+  read_callbacks_->connection().readDisable(disable);
+  // The WsHandlerImpl class uses TCP Proxy code with a null config.
+  if (!config_) {
+    return;
+  }
+
+  if (disable) {
+    config_->stats().downstream_flow_control_paused_reading_total_.inc();
+  } else {
+    config_->stats().downstream_flow_control_resumed_reading_total_.inc();
+  }
+}
+
+void TcpProxy::DownstreamCallbacks::onAboveWriteBufferHighWatermark() {
+  ASSERT(!on_high_watermark_called_);
+  on_high_watermark_called_ = true;
+  // If downstream has too much data buffered, stop reading on the upstream connection.
+  parent_.readDisableUpstream(true);
+}
+
+void TcpProxy::DownstreamCallbacks::onBelowWriteBufferLowWatermark() {
+  ASSERT(on_high_watermark_called_);
+  on_high_watermark_called_ = false;
+  // The downstream buffer has been drained.  Resume reading from upstream.
+  parent_.readDisableUpstream(false);
+}
+
+void TcpProxy::UpstreamCallbacks::onAboveWriteBufferHighWatermark() {
+  ASSERT(!on_high_watermark_called_);
+  on_high_watermark_called_ = true;
+  // There's too much data buffered in the upstream write buffer, so stop reading.
+  parent_.readDisableDownstream(true);
+}
+
+void TcpProxy::UpstreamCallbacks::onBelowWriteBufferLowWatermark() {
+  ASSERT(on_high_watermark_called_);
+  on_high_watermark_called_ = false;
+  // The upstream write buffer is drained.  Resume reading.
+  parent_.readDisableDownstream(false);
 }
 
 Network::FilterStatus TcpProxy::initializeUpstreamConnection() {
-  const std::string& cluster_name = config_->getRouteFromEntries(read_callbacks_->connection());
+  const std::string& cluster_name = getUpstreamCluster();
 
   Upstream::ThreadLocalCluster* thread_local_cluster = cluster_manager_.get(cluster_name);
 
   if (thread_local_cluster) {
-    conn_log_debug("Creating connection to cluster {}", read_callbacks_->connection(),
+    ENVOY_CONN_LOG(debug, "Creating connection to cluster {}", read_callbacks_->connection(),
                    cluster_name);
   } else {
-    config_->stats().downstream_cx_no_route_.inc();
-    read_callbacks_->connection().close(Network::ConnectionCloseType::NoFlush);
+    if (config_) {
+      config_->stats().downstream_cx_no_route_.inc();
+    }
+    onInitFailure();
     return Network::FilterStatus::StopIteration;
   }
 
   Upstream::ClusterInfoConstSharedPtr cluster = thread_local_cluster->info();
   if (!cluster->resourceManager(Upstream::ResourcePriority::Default).connections().canCreate()) {
     cluster->stats().upstream_cx_overflow_.inc();
-    read_callbacks_->connection().close(Network::ConnectionCloseType::NoFlush);
+    onInitFailure();
     return Network::FilterStatus::StopIteration;
   }
-  Upstream::Host::CreateConnectionData conn_info = cluster_manager_.tcpConnForCluster(cluster_name);
+  Upstream::Host::CreateConnectionData conn_info =
+      cluster_manager_.tcpConnForCluster(cluster_name, this);
 
   upstream_connection_ = std::move(conn_info.connection_);
   read_callbacks_->upstreamHost(conn_info.host_description_);
   if (!upstream_connection_) {
-    read_callbacks_->connection().close(Network::ConnectionCloseType::NoFlush);
+    onInitFailure();
     return Network::FilterStatus::StopIteration;
   }
-  cluster->resourceManager(Upstream::ResourcePriority::Default).connections().inc();
 
+  onUpstreamHostReady();
+  cluster->resourceManager(Upstream::ResourcePriority::Default).connections().inc();
   upstream_connection_->addReadFilter(upstream_callbacks_);
   upstream_connection_->addConnectionCallbacks(*upstream_callbacks_);
-  upstream_connection_->setBufferStats(
+  upstream_connection_->setConnectionStats(
       {read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_rx_bytes_total_,
        read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_rx_bytes_buffered_,
        read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_tx_bytes_total_,
-       read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_tx_bytes_buffered_});
+       read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_tx_bytes_buffered_,
+       &read_callbacks_->upstreamHost()->cluster().stats().bind_errors_});
   upstream_connection_->connect();
   upstream_connection_->noDelay(true);
 
@@ -179,23 +243,23 @@ Network::FilterStatus TcpProxy::initializeUpstreamConnection() {
 }
 
 void TcpProxy::onConnectTimeout() {
-  conn_log_debug("connect timeout", read_callbacks_->connection());
+  ENVOY_CONN_LOG(debug, "connect timeout", read_callbacks_->connection());
   read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_connect_timeout_.inc();
 
   // This will close the upstream connection as well.
-  read_callbacks_->connection().close(Network::ConnectionCloseType::NoFlush);
+  onConnectTimeoutError();
 }
 
 Network::FilterStatus TcpProxy::onData(Buffer::Instance& data) {
-  conn_log_trace("received {} bytes", read_callbacks_->connection(), data.length());
+  ENVOY_CONN_LOG(trace, "received {} bytes", read_callbacks_->connection(), data.length());
   upstream_connection_->write(data);
   ASSERT(0 == data.length());
   return Network::FilterStatus::StopIteration;
 }
 
-void TcpProxy::onDownstreamEvent(uint32_t event) {
-  if ((event & Network::ConnectionEvent::RemoteClose ||
-       event & Network::ConnectionEvent::LocalClose) &&
+void TcpProxy::onDownstreamEvent(Network::ConnectionEvent event) {
+  if ((event == Network::ConnectionEvent::RemoteClose ||
+       event == Network::ConnectionEvent::LocalClose) &&
       upstream_connection_) {
     // TODO(mattklein123): If we close without flushing here we may drop some data. The downstream
     // connection is about to go away. So to support this we need to either have a way for the
@@ -210,24 +274,25 @@ void TcpProxy::onUpstreamData(Buffer::Instance& data) {
   ASSERT(0 == data.length());
 }
 
-void TcpProxy::onUpstreamEvent(uint32_t event) {
-  if (event & Network::ConnectionEvent::RemoteClose) {
+void TcpProxy::onUpstreamEvent(Network::ConnectionEvent event) {
+  if (event == Network::ConnectionEvent::RemoteClose) {
     read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_destroy_remote_.inc();
   }
 
-  if (event & Network::ConnectionEvent::LocalClose) {
+  if (event == Network::ConnectionEvent::LocalClose) {
     read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_destroy_local_.inc();
   }
 
-  if (event & Network::ConnectionEvent::RemoteClose) {
+  if (event == Network::ConnectionEvent::RemoteClose) {
     if (connect_timeout_timer_) {
       read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_connect_fail_.inc();
       read_callbacks_->upstreamHost()->stats().cx_connect_fail_.inc();
     }
 
-    read_callbacks_->connection().close(Network::ConnectionCloseType::FlushWrite);
-  } else if (event & Network::ConnectionEvent::Connected) {
+    onConnectionFailure();
+  } else if (event == Network::ConnectionEvent::Connected) {
     connect_timespan_->complete();
+    onConnectionSuccess();
   }
 
   if (connect_timeout_timer_) {
@@ -236,4 +301,5 @@ void TcpProxy::onUpstreamEvent(uint32_t event) {
   }
 }
 
-} // Filter
+} // namespace Filter
+} // namespace Envoy

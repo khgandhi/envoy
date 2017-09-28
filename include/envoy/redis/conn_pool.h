@@ -7,6 +7,7 @@
 #include "envoy/redis/codec.h"
 #include "envoy/upstream/cluster_manager.h"
 
+namespace Envoy {
 namespace Redis {
 namespace ConnPool {
 
@@ -45,7 +46,7 @@ public:
 /**
  * A single redis client connection.
  */
-class Client {
+class Client : public Event::DeferredDeletable {
 public:
   virtual ~Client() {}
 
@@ -125,5 +126,6 @@ public:
 
 typedef std::unique_ptr<Instance> InstancePtr;
 
-} // ConnPool
-} // Redis
+} // namespace ConnPool
+} // namespace Redis
+} // namespace Envoy

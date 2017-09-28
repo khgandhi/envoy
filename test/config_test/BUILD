@@ -9,6 +9,8 @@ load(
 
 envoy_package()
 
+exports_files(["example_configs_test_setup.sh"])
+
 envoy_cc_test(
     name = "example_configs_test",
     srcs = [
@@ -20,6 +22,7 @@ envoy_cc_test(
     ],
     deps = [
         ":config_test_lib",
+        "//source/server/config/stats:statsd_lib",
         "//test/test_common:environment_lib",
         "//test/test_common:utility_lib",
     ],
@@ -30,6 +33,7 @@ envoy_cc_test_library(
     srcs = ["config_test.cc"],
     hdrs = ["config_test.h"],
     deps = [
+        "//source/common/protobuf:utility_lib",
         "//source/server:configuration_lib",
         "//test/integration:integration_lib",
         "//test/mocks/server:server_mocks",

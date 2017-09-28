@@ -15,6 +15,7 @@
 #include "common/http/codec_wrappers.h"
 #include "common/network/filter_impl.h"
 
+namespace Envoy {
 namespace Http {
 
 /**
@@ -89,8 +90,8 @@ public:
    */
   StreamEncoder& newStream(StreamDecoder& response_decoder);
 
-  void setBufferStats(const Network::Connection::BufferStats& stats) {
-    connection_->setBufferStats(stats);
+  void setConnectionStats(const Network::Connection::ConnectionStats& stats) {
+    connection_->setConnectionStats(stats);
   }
 
   void setCodecClientCallbacks(CodecClientCallbacks& callbacks) {
@@ -156,6 +157,8 @@ private:
 
     // StreamCallbacks
     void onResetStream(StreamResetReason reason) override { parent_.onReset(*this, reason); }
+    void onAboveWriteBufferHighWatermark() override {}
+    void onBelowWriteBufferLowWatermark() override {}
 
     // StreamDecoderWrapper
     void onPreDecodeComplete() override { parent_.responseDecodeComplete(*this); }
@@ -178,7 +181,15 @@ private:
   void onData(Buffer::Instance& data);
 
   // Network::ConnectionCallbacks
-  void onEvent(uint32_t events) override;
+  void onEvent(Network::ConnectionEvent event) override;
+  // Pass watermark events from the connection on to the codec which will pass it to the underlying
+  // streams.
+  void onAboveWriteBufferHighWatermark() override {
+    codec_->onUnderlyingConnectionAboveWriteBufferHighWatermark();
+  }
+  void onBelowWriteBufferLowWatermark() override {
+    codec_->onUnderlyingConnectionBelowWriteBufferLowWatermark();
+  }
 
   std::list<ActiveRequestPtr> active_requests_;
   Http::ConnectionCallbacks* codec_callbacks_{};
@@ -198,4 +209,5 @@ public:
                   Upstream::HostDescriptionConstSharedPtr host);
 };
 
-} // Http
+} // namespace Http
+} // namespace Envoy

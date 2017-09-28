@@ -2,22 +2,24 @@
 
 #include <string>
 
-#include "envoy/server/instance.h"
+#include "envoy/server/filter_config.h"
 
-#include "server/config/network/http_connection_manager.h"
+#include "common/config/well_known_names.h"
 
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
 /**
- * Config registration for the rate limit filter. @see HttpFilterConfigFactory.
+ * Config registration for the rate limit filter. @see NamedHttpFilterConfigFactory.
  */
-class RateLimitFilterConfig : public HttpFilterConfigFactory {
+class RateLimitFilterConfig : public NamedHttpFilterConfigFactory {
 public:
-  HttpFilterFactoryCb tryCreateFilterFactory(HttpFilterType type, const std::string& name,
-                                             const Json::Object& config, const std::string&,
-                                             Server::Instance& server) override;
+  HttpFilterFactoryCb createFilterFactory(const Json::Object& config, const std::string&,
+                                          FactoryContext& context) override;
+  std::string name() override { return Config::HttpFilterNames::get().RATE_LIMIT; }
 };
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

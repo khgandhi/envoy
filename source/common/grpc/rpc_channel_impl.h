@@ -8,7 +8,9 @@
 #include "envoy/upstream/cluster_manager.h"
 
 #include "common/common/assert.h"
+#include "common/protobuf/protobuf.h"
 
+namespace Envoy {
 namespace Grpc {
 
 /**
@@ -24,6 +26,7 @@ namespace Grpc {
  *    needed.
  * 4) Inflight RPCs can be safely cancelled using cancel().
  * 5) See GrpcRequestImplTest for an example.
+ * DEPRECATED: See https://github.com/envoyproxy/envoy/issues/1102
  */
 class RpcChannelImpl : public RpcChannel, public Http::AsyncClient::Callbacks {
 public:
@@ -33,15 +36,15 @@ public:
 
   ~RpcChannelImpl() { ASSERT(!http_request_ && !grpc_method_ && !grpc_response_); }
 
-  static Buffer::InstancePtr serializeBody(const proto::Message& message);
+  static Buffer::InstancePtr serializeBody(const Protobuf::Message& message);
 
   // Grpc::RpcChannel
   void cancel() override;
 
-  // proto::RpcChannel
-  void CallMethod(const proto::MethodDescriptor* method, proto::RpcController* controller,
-                  const proto::Message* grpc_request, proto::Message* grpc_response,
-                  proto::Closure* done_callback) override;
+  // Protobuf::RpcChannel
+  void CallMethod(const Protobuf::MethodDescriptor* method, Protobuf::RpcController* controller,
+                  const Protobuf::Message* grpc_request, Protobuf::Message* grpc_response,
+                  Protobuf::Closure* done_callback) override;
 
 private:
   void incStat(bool success);
@@ -56,10 +59,11 @@ private:
   Upstream::ClusterManager& cm_;
   Upstream::ClusterInfoConstSharedPtr cluster_;
   Http::AsyncClient::Request* http_request_{};
-  const proto::MethodDescriptor* grpc_method_{};
-  proto::Message* grpc_response_{};
+  const Protobuf::MethodDescriptor* grpc_method_{};
+  Protobuf::Message* grpc_response_{};
   RpcChannelCallbacks& callbacks_;
   Optional<std::chrono::milliseconds> timeout_;
 };
 
-} // Grpc
+} // namespace Grpc
+} // namespace Envoy

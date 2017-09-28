@@ -18,13 +18,16 @@
 #include "envoy/router/router_ratelimit.h"
 #include "envoy/router/shadow_writer.h"
 #include "envoy/ssl/connection.h"
+#include "envoy/tracing/http_tracer.h"
 
 #include "common/common/empty_string.h"
 #include "common/common/linked_object.h"
 #include "common/http/access_log/request_info_impl.h"
 #include "common/http/message_impl.h"
 #include "common/router/router.h"
+#include "common/tracing/http_tracer_impl.h"
 
+namespace Envoy {
 namespace Http {
 
 class AsyncStreamImpl;
@@ -45,6 +48,8 @@ public:
   Stream* start(StreamCallbacks& callbacks,
                 const Optional<std::chrono::milliseconds>& timeout) override;
 
+  Event::Dispatcher& dispatcher() override { return dispatcher_; }
+
 private:
   const Upstream::ClusterInfo& cluster_;
   Router::FilterConfig config_;
@@ -61,12 +66,12 @@ private:
  */
 class AsyncStreamImpl : public AsyncClient::Stream,
                         public StreamDecoderFilterCallbacks,
+                        public Event::DeferredDeletable,
                         Logger::Loggable<Logger::Id::http>,
                         LinkedObject<AsyncStreamImpl> {
 public:
   AsyncStreamImpl(AsyncClientImpl& parent, AsyncClient::StreamCallbacks& callbacks,
                   const Optional<std::chrono::milliseconds>& timeout);
-  virtual ~AsyncStreamImpl();
 
   // Http::AsyncClient::Stream
   void sendHeaders(HeaderMap& headers, bool end_stream) override;
@@ -80,10 +85,24 @@ protected:
   AsyncClientImpl& parent_;
 
 private:
+  struct NullCorsPolicy : public Router::CorsPolicy {
+    // Router::CorsPolicy
+    const std::list<std::string>& allowOrigins() const override { return allow_origin_; };
+    const std::string& allowMethods() const override { return EMPTY_STRING; };
+    const std::string& allowHeaders() const override { return EMPTY_STRING; };
+    const std::string& exposeHeaders() const override { return EMPTY_STRING; };
+    const std::string& maxAge() const override { return EMPTY_STRING; };
+    const Optional<bool>& allowCredentials() const override { return allow_credentials_; };
+    bool enabled() const override { return false; };
+
+    static const std::list<std::string> allow_origin_;
+    static const Optional<bool> allow_credentials_;
+  };
+
   struct NullRateLimitPolicy : public Router::RateLimitPolicy {
     // Router::RateLimitPolicy
     const std::vector<std::reference_wrapper<const Router::RateLimitPolicyEntry>>&
-        getApplicableRateLimit(uint64_t) const override {
+    getApplicableRateLimit(uint64_t) const override {
       return rate_limit_policy_entry_;
     }
     bool empty() const override { return true; }
@@ -111,6 +130,7 @@ private:
     // Router::VirtualHost
     const std::string& name() const override { return EMPTY_STRING; }
     const Router::RateLimitPolicy& rateLimitPolicy() const override { return rate_limit_policy_; }
+    const Router::CorsPolicy* corsPolicy() const override { return nullptr; }
 
     static const NullRateLimitPolicy rate_limit_policy_;
   };
@@ -122,7 +142,9 @@ private:
 
     // Router::RouteEntry
     const std::string& clusterName() const override { return cluster_name_; }
-    void finalizeRequestHeaders(Http::HeaderMap&) const override {}
+    const Router::CorsPolicy* corsPolicy() const override { return nullptr; }
+    void finalizeRequestHeaders(Http::HeaderMap&,
+                                const Http::AccessLog::RequestInfo&) const override {}
     const Router::HashPolicy* hashPolicy() const override { return nullptr; }
     Upstream::ResourcePriority priority() const override {
       return Upstream::ResourcePriority::Default;
@@ -145,6 +167,7 @@ private:
     }
     const Router::VirtualHost& virtualHost() const override { return virtual_host_; }
     bool autoHostRewrite() const override { return false; }
+    bool useWebSocket() const override { return false; }
     bool includeVirtualHostRateLimits() const override { return true; }
 
     static const NullRateLimitPolicy rate_limit_policy_;
@@ -164,6 +187,7 @@ private:
     // Router::Route
     const Router::RedirectEntry* redirectEntry() const override { return nullptr; }
     const Router::RouteEntry* routeEntry() const override { return &route_entry_; }
+    const Router::Decorator* decorator() const override { return nullptr; }
 
     RouteEntryImpl route_entry_;
   };
@@ -174,30 +198,35 @@ private:
   bool complete() { return local_closed_ && remote_closed_; }
 
   // Http::StreamDecoderFilterCallbacks
-  void addResetStreamCallback(std::function<void()> callback) override {
-    reset_callback_ = callback;
-  }
-  uint64_t connectionId() override { return 0; }
-  Ssl::Connection* ssl() override { return nullptr; }
+  const Network::Connection* connection() override { return nullptr; }
   Event::Dispatcher& dispatcher() override { return parent_.dispatcher_; }
   void resetStream() override;
   Router::RouteConstSharedPtr route() override { return route_; }
+  void clearRouteCache() override {}
   uint64_t streamId() override { return stream_id_; }
   AccessLog::RequestInfo& requestInfo() override { return request_info_; }
+  Tracing::Span& activeSpan() override { return active_span_; }
   const std::string& downstreamAddress() override { return EMPTY_STRING; }
   void continueDecoding() override { NOT_IMPLEMENTED; }
-  Buffer::InstancePtr& decodingBuffer() override {
+  void addDecodedData(Buffer::Instance&, bool) override { NOT_IMPLEMENTED; }
+  const Buffer::Instance* decodingBuffer() override {
     throw EnvoyException("buffering is not supported in streaming");
   }
   void encodeHeaders(HeaderMapPtr&& headers, bool end_stream) override;
   void encodeData(Buffer::Instance& data, bool end_stream) override;
   void encodeTrailers(HeaderMapPtr&& trailers) override;
+  void onDecoderFilterAboveWriteBufferHighWatermark() override {}
+  void onDecoderFilterBelowWriteBufferLowWatermark() override {}
+  void addDownstreamWatermarkCallbacks(DownstreamWatermarkCallbacks&) override {}
+  void removeDownstreamWatermarkCallbacks(DownstreamWatermarkCallbacks&) override {}
+  void setDecoderBufferLimit(uint32_t) override {}
+  uint32_t decoderBufferLimit() override { return 0; }
 
   AsyncClient::StreamCallbacks& stream_callbacks_;
   const uint64_t stream_id_;
   Router::ProdFilter router_;
-  std::function<void()> reset_callback_;
   AccessLog::RequestInfoImpl request_info_;
+  Tracing::NullSpan active_span_;
   std::shared_ptr<RouteImpl> route_;
   bool local_closed_{};
   bool remote_closed_{};
@@ -216,6 +245,7 @@ public:
   virtual void cancel() override;
 
 private:
+  void initialize();
   void onComplete();
 
   // AsyncClient::StreamCallbacks
@@ -225,7 +255,7 @@ private:
   void onReset() override;
 
   // Http::StreamDecoderFilterCallbacks
-  Buffer::InstancePtr& decodingBuffer() override { return request_->body(); }
+  const Buffer::Instance* decodingBuffer() override { return request_->body().get(); }
 
   MessagePtr request_;
   AsyncClient::Callbacks& callbacks_;
@@ -235,4 +265,5 @@ private:
   friend class AsyncClientImpl;
 };
 
-} // Http
+} // namespace Http
+} // namespace Envoy

@@ -14,11 +14,12 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
+using testing::_;
 
+namespace Envoy {
 namespace Dynamo {
 
 class DynamoFilterTest : public testing::Test {
@@ -33,6 +34,8 @@ public:
     filter_->setDecoderFilterCallbacks(decoder_callbacks_);
     filter_->setEncoderFilterCallbacks(encoder_callbacks_);
   }
+
+  ~DynamoFilterTest() { filter_->onDestroy(); }
 
   std::unique_ptr<DynamoFilter> filter_;
   NiceMock<Runtime::MockLoader> loader_;
@@ -115,7 +118,7 @@ TEST_F(DynamoFilterTest, handleErrorTypeTableMissing) {
   error_data->add("}", 1);
   EXPECT_EQ(Http::FilterDataStatus::StopIterationAndBuffer,
             filter_->encodeData(*error_data, false));
-  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillRepeatedly(ReturnRef(error_data));
+  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillRepeatedly(Return(error_data.get()));
   EXPECT_CALL(stats_, counter("prefix.dynamodb.invalid_resp_body"));
   EXPECT_CALL(stats_, counter("prefix.dynamodb.operation_missing"));
   EXPECT_CALL(stats_, counter("prefix.dynamodb.table_missing"));
@@ -184,7 +187,7 @@ TEST_F(DynamoFilterTest, BatchMultipleTables) {
   buffer->add(buffer_content);
 
   EXPECT_EQ(Http::FilterDataStatus::StopIterationAndBuffer, filter_->decodeData(*buffer, false));
-  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(ReturnRef(buffer));
+  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(Return(buffer.get()));
   EXPECT_EQ(Http::FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers));
 
   Http::TestHeaderMapImpl response_headers{{":status", "200"}};
@@ -223,7 +226,7 @@ TEST_F(DynamoFilterTest, BatchMultipleTablesUnprocessedKeys) {
   buffer->add(buffer_content);
 
   EXPECT_EQ(Http::FilterDataStatus::StopIterationAndBuffer, filter_->decodeData(*buffer, false));
-  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(ReturnRef(buffer));
+  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(Return(buffer.get()));
   EXPECT_EQ(Http::FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers));
 
   Http::TestHeaderMapImpl response_headers{{":status", "200"}};
@@ -256,9 +259,7 @@ TEST_F(DynamoFilterTest, BatchMultipleTablesUnprocessedKeys) {
 
   EXPECT_CALL(stats_, counter("prefix.dynamodb.error.table_1.BatchFailureUnprocessedKeys"));
   EXPECT_CALL(stats_, counter("prefix.dynamodb.error.table_2.BatchFailureUnprocessedKeys"));
-  EXPECT_CALL(encoder_callbacks_, encodingBuffer())
-      .Times(1)
-      .WillRepeatedly(ReturnRef(response_data));
+  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillRepeatedly(Return(response_data.get()));
   EXPECT_EQ(Http::FilterDataStatus::Continue, filter_->encodeData(empty_data, true));
 }
 
@@ -281,7 +282,7 @@ TEST_F(DynamoFilterTest, BatchMultipleTablesNoUnprocessedKeys) {
   buffer->add(buffer_content);
 
   EXPECT_EQ(Http::FilterDataStatus::StopIterationAndBuffer, filter_->decodeData(*buffer, false));
-  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(ReturnRef(buffer));
+  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(Return(buffer.get()));
   EXPECT_EQ(Http::FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers));
 
   Http::TestHeaderMapImpl response_headers{{":status", "200"}};
@@ -310,7 +311,7 @@ TEST_F(DynamoFilterTest, BatchMultipleTablesNoUnprocessedKeys) {
 )EOF";
   response_data->add(response_content);
 
-  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(ReturnRef(response_data));
+  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(Return(response_data.get()));
   EXPECT_EQ(Http::FilterDataStatus::Continue, filter_->encodeData(empty_data, true));
 }
 
@@ -333,7 +334,7 @@ TEST_F(DynamoFilterTest, BatchMultipleTablesInvalidResponseBody) {
   buffer->add(buffer_content);
 
   EXPECT_EQ(Http::FilterDataStatus::StopIterationAndBuffer, filter_->decodeData(*buffer, false));
-  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(ReturnRef(buffer));
+  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(Return(buffer.get()));
   EXPECT_EQ(Http::FilterTrailersStatus::Continue, filter_->decodeTrailers(request_headers));
 
   Http::TestHeaderMapImpl response_headers{{":status", "200"}};
@@ -366,7 +367,7 @@ TEST_F(DynamoFilterTest, BatchMultipleTablesInvalidResponseBody) {
   response_data->add("}", 1);
 
   EXPECT_CALL(stats_, counter("prefix.dynamodb.invalid_resp_body"));
-  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(ReturnRef(response_data));
+  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(Return(response_data.get()));
   EXPECT_EQ(Http::FilterDataStatus::Continue, filter_->encodeData(empty_data, true));
 }
 
@@ -377,7 +378,7 @@ TEST_F(DynamoFilterTest, bothOperationAndTableCorrect) {
   Buffer::InstancePtr buffer(new Buffer::OwnedImpl());
   std::string buffer_content = "{\"TableName\":\"locations\"";
   buffer->add(buffer_content);
-  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(ReturnRef(buffer));
+  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(Return(buffer.get()));
   Buffer::OwnedImpl data;
   data.add("}", 1);
 
@@ -432,7 +433,7 @@ TEST_F(DynamoFilterTest, PartitionIdStats) {
   Buffer::InstancePtr buffer(new Buffer::OwnedImpl());
   std::string buffer_content = "{\"TableName\":\"locations\"";
   buffer->add(buffer_content);
-  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(ReturnRef(buffer));
+  ON_CALL(decoder_callbacks_, decodingBuffer()).WillByDefault(Return(buffer.get()));
   Buffer::OwnedImpl data;
   data.add("}", 1);
 
@@ -486,7 +487,7 @@ TEST_F(DynamoFilterTest, PartitionIdStats) {
 
   response_data->add(response_content);
 
-  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(ReturnRef(response_data));
+  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(Return(response_data.get()));
   EXPECT_EQ(Http::FilterDataStatus::Continue, filter_->encodeData(empty_data, true));
 }
 
@@ -504,7 +505,7 @@ TEST_F(DynamoFilterTest, NoPartitionIdStatsForMultipleTables) {
 }
 )EOF";
   buffer->add(buffer_content);
-  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(ReturnRef(buffer));
+  ON_CALL(decoder_callbacks_, decodingBuffer()).WillByDefault(Return(buffer.get()));
 
   EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter_->decodeHeaders(request_headers, false));
   EXPECT_EQ(Http::FilterDataStatus::StopIterationAndBuffer, filter_->decodeData(*buffer, false));
@@ -550,7 +551,7 @@ TEST_F(DynamoFilterTest, NoPartitionIdStatsForMultipleTables) {
 
   response_data->add(response_content);
 
-  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(ReturnRef(response_data));
+  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(Return(response_data.get()));
   EXPECT_EQ(Http::FilterDataStatus::Continue, filter_->encodeData(empty_data, true));
 }
 
@@ -567,7 +568,7 @@ TEST_F(DynamoFilterTest, PartitionIdStatsForSingleTableBatchOperation) {
 }
 )EOF";
   buffer->add(buffer_content);
-  EXPECT_CALL(decoder_callbacks_, decodingBuffer()).WillRepeatedly(ReturnRef(buffer));
+  ON_CALL(decoder_callbacks_, decodingBuffer()).WillByDefault(Return(buffer.get()));
 
   EXPECT_EQ(Http::FilterHeadersStatus::Continue, filter_->decodeHeaders(request_headers, false));
   EXPECT_EQ(Http::FilterDataStatus::StopIterationAndBuffer, filter_->decodeData(*buffer, false));
@@ -623,8 +624,9 @@ TEST_F(DynamoFilterTest, PartitionIdStatsForSingleTableBatchOperation) {
 
   response_data->add(response_content);
 
-  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(ReturnRef(response_data));
+  EXPECT_CALL(encoder_callbacks_, encodingBuffer()).WillOnce(Return(response_data.get()));
   EXPECT_EQ(Http::FilterDataStatus::Continue, filter_->encodeData(empty_data, true));
 }
 
-} // Dynamo
+} // namespace Dynamo
+} // namespace Envoy

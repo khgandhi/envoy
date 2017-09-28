@@ -9,6 +9,7 @@
 
 #include "common/common/logger.h"
 
+namespace Envoy {
 namespace Mongo {
 
 class MessageImpl : public virtual Message {
@@ -214,4 +215,5 @@ private:
   Buffer::Instance& output_;
 };
 
-} // Mongo
+} // namespace Mongo
+} // namespace Envoy

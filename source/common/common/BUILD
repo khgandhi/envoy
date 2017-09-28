@@ -27,8 +27,18 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
+    name = "byte_order_lib",
+    hdrs = ["byte_order.h"],
+)
+
+envoy_cc_library(
     name = "c_smart_ptr_lib",
     hdrs = ["c_smart_ptr.h"],
+)
+
+envoy_cc_library(
+    name = "compiler_requirements_lib",
+    hdrs = ["compiler_requirements.h"],
 )
 
 envoy_cc_library(
@@ -39,6 +49,12 @@ envoy_cc_library(
 envoy_cc_library(
     name = "enum_to_int",
     hdrs = ["enum_to_int.h"],
+)
+
+envoy_cc_library(
+    name = "hash_lib",
+    hdrs = ["hash.h"],
+    external_deps = ["xxhash"],
 )
 
 envoy_cc_library(
@@ -60,6 +76,8 @@ envoy_cc_library(
     hdrs = ["logger.h"],
     deps = [
         ":macros",
+        "//include/envoy/access_log:access_log_interface",
+        "//include/envoy/filesystem:filesystem_interface",
         "//include/envoy/thread:thread_interface",
     ],
 )
@@ -113,6 +131,7 @@ envoy_cc_library(
     linkstamp = "version_linkstamp.cc",
     deps = [
         ":version_includes",
+        "//source/common/common:macros",
     ],
 )
 
@@ -120,4 +139,13 @@ envoy_cc_library(
     name = "to_lower_table_lib",
     srcs = ["to_lower_table.cc"],
     hdrs = ["to_lower_table.h"],
+)
+
+envoy_cc_library(
+    name = "callback_impl_lib",
+    hdrs = ["callback_impl.h"],
+    deps = [
+        ":assert_lib",
+        "//include/envoy/common:callback",
+    ],
 )

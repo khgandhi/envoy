@@ -13,6 +13,7 @@
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace Redis {
 
 bool operator==(const RespValue& lhs, const RespValue& rhs);
@@ -43,9 +44,9 @@ public:
   MockClient();
   ~MockClient();
 
-  void raiseEvents(uint32_t events) {
+  void raiseEvent(Network::ConnectionEvent event) {
     for (Network::ConnectionCallbacks* callbacks : callbacks_) {
-      callbacks->onEvent(events);
+      callbacks->onEvent(event);
     }
   }
 
@@ -84,7 +85,7 @@ public:
                                          PoolCallbacks& callbacks));
 };
 
-} // ConnPool
+} // namespace ConnPool
 
 namespace CommandSplitter {
 
@@ -118,5 +119,6 @@ public:
   MOCK_METHOD2(makeRequest_, SplitRequest*(const RespValue& request, SplitCallbacks& callbacks));
 };
 
-} // CommandSplitter
-} // Redis
+} // namespace CommandSplitter
+} // namespace Redis
+} // namespace Envoy

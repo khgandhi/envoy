@@ -12,6 +12,7 @@
 #include "envoy/http/protocol.h"
 #include "envoy/upstream/upstream.h"
 
+namespace Envoy {
 namespace Http {
 namespace AccessLog {
 
@@ -65,6 +66,32 @@ public:
   virtual SystemTime startTime() const PURE;
 
   /**
+   * @return duration from request start to when the entire request was received from the
+   * downstream client in microseconds. Note: if unset, will return 0 microseconds.
+   */
+  virtual std::chrono::microseconds requestReceivedDuration() const PURE;
+
+  /**
+   * Set the duration from request start to when the entire request was received from the
+   * downstream client.
+   * @param time monotonic clock time when the response was received.
+   */
+  virtual void requestReceivedDuration(MonotonicTime time) PURE;
+
+  /**
+   * @return the duration from request start to when the entire response was received from the
+   * upstream host in microseconds. Note: if unset, will return 0 microseconds.
+   */
+  virtual std::chrono::microseconds responseReceivedDuration() const PURE;
+
+  /**
+   * Set the duration from request start to when the entire response was received from the
+   * upstream host.
+   * @param time monotonic clock time when the response was received.
+   */
+  virtual void responseReceivedDuration(MonotonicTime time) PURE;
+
+  /**
    * @return the # of body bytes received in the request.
    */
   virtual uint64_t bytesReceived() const PURE;
@@ -90,9 +117,9 @@ public:
   virtual uint64_t bytesSent() const PURE;
 
   /**
-   * @return the milliseconds duration of the first byte received to the last byte sent.
+   * @return the microseconds duration of the first byte received to the last byte sent.
    */
-  virtual std::chrono::milliseconds duration() const PURE;
+  virtual std::chrono::microseconds duration() const PURE;
 
   /**
    * @return whether response flag is set or not.
@@ -113,6 +140,11 @@ public:
    * Set whether the request is a health check request or not.
    */
   virtual void healthCheck(bool is_hc) PURE;
+
+  /**
+   * Get the downstream address.
+   */
+  virtual const std::string& getDownstreamAddress() const PURE;
 };
 
 /**
@@ -165,5 +197,6 @@ public:
 
 typedef std::unique_ptr<Formatter> FormatterPtr;
 
-} // AccessLog
-} // Http
+} // namespace AccessLog
+} // namespace Http
+} // namespace Envoy

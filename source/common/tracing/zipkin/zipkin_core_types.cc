@@ -9,6 +9,7 @@
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 
+namespace Envoy {
 // TODO(fabolive): Need to add interfaces to the JSON namespace
 
 namespace Zipkin {
@@ -69,6 +70,12 @@ Annotation& Annotation::operator=(const Annotation& ann) {
   }
 
   return *this;
+}
+
+void Annotation::changeEndpointServiceName(const std::string& service_name) {
+  if (endpoint_.valid()) {
+    endpoint_.value().setServiceName(service_name);
+  }
 }
 
 const std::string Annotation::toJson() {
@@ -156,29 +163,10 @@ Span::Span(const Span& span) {
   tracer_ = span.tracer();
 }
 
-Span& Span::operator=(const Span& span) {
-  trace_id_ = span.traceId();
-  name_ = span.name();
-  id_ = span.id();
-  if (span.isSetParentId()) {
-    parent_id_ = span.parentId();
+void Span::setServiceName(const std::string& service_name) {
+  for (auto it = annotations_.begin(); it != annotations_.end(); it++) {
+    it->changeEndpointServiceName(service_name);
   }
-  debug_ = span.debug();
-  annotations_ = span.annotations();
-  binary_annotations_ = span.binaryAnnotations();
-  if (span.isSetTimestamp()) {
-    timestamp_ = span.timestamp();
-  }
-  if (span.isSetDuration()) {
-    duration_ = span.duration();
-  }
-  if (span.isSetTraceIdHigh()) {
-    trace_id_high_ = span.traceIdHigh();
-  }
-  monotonic_start_time_ = span.startTime();
-  tracer_ = span.tracer();
-
-  return *this;
 }
 
 const std::string Span::toJson() {
@@ -232,27 +220,30 @@ const std::string Span::toJson() {
 void Span::finish() {
   // Assumption: Span will have only one annotation when this method is called
   SpanContext context(*this);
-  if (context.annotationSet().sr_ && !context.annotationSet().ss_) {
+  if (annotations_[0].value() == ZipkinCoreConstants::get().SERVER_RECV) {
     // Need to set the SS annotation
     Annotation ss;
     ss.setEndpoint(annotations_[0].endpoint());
     ss.setTimestamp(std::chrono::duration_cast<std::chrono::microseconds>(
-                        ProdSystemTimeSource::instance_.currentTime().time_since_epoch()).count());
+                        ProdSystemTimeSource::instance_.currentTime().time_since_epoch())
+                        .count());
     ss.setValue(ZipkinCoreConstants::get().SERVER_SEND);
     annotations_.push_back(std::move(ss));
-  } else if (context.annotationSet().cs_ && !context.annotationSet().cr_) {
+  } else if (annotations_[0].value() == ZipkinCoreConstants::get().CLIENT_SEND) {
     // Need to set the CR annotation
     Annotation cr;
     const uint64_t stop_timestamp =
         std::chrono::duration_cast<std::chrono::microseconds>(
-            ProdSystemTimeSource::instance_.currentTime().time_since_epoch()).count();
+            ProdSystemTimeSource::instance_.currentTime().time_since_epoch())
+            .count();
     cr.setEndpoint(annotations_[0].endpoint());
     cr.setTimestamp(stop_timestamp);
     cr.setValue(ZipkinCoreConstants::get().CLIENT_RECV);
     annotations_.push_back(std::move(cr));
     const int64_t monotonic_stop_time =
         std::chrono::duration_cast<std::chrono::microseconds>(
-            ProdMonotonicTimeSource::instance_.currentTime().time_since_epoch()).count();
+            ProdMonotonicTimeSource::instance_.currentTime().time_since_epoch())
+            .count();
     setDuration(monotonic_stop_time - monotonic_start_time_);
   }
 
@@ -266,4 +257,5 @@ void Span::setTag(const std::string& name, const std::string& value) {
     addBinaryAnnotation(BinaryAnnotation(name, value));
   }
 }
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

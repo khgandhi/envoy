@@ -11,9 +11,10 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Return;
+using testing::_;
 
+namespace Envoy {
 namespace AccessLog {
 
 TEST(AccessLogManagerImpl, reopenAllFiles) {
@@ -39,4 +40,5 @@ TEST(AccessLogManagerImpl, reopenAllFiles) {
   access_log_manager.reopen();
 }
 
-} // AccessLog
+} // namespace AccessLog
+} // namespace Envoy

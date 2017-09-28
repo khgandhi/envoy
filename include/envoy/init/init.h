@@ -4,6 +4,7 @@
 
 #include "envoy/common/pure.h"
 
+namespace Envoy {
 namespace Init {
 
 /**
@@ -35,4 +36,5 @@ public:
   virtual void registerTarget(Target& target) PURE;
 };
 
-} // Init
+} // namespace Init
+} // namespace Envoy

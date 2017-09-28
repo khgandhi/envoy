@@ -9,10 +9,13 @@
 #include <string>
 
 #include "envoy/common/optional.h"
+#include "envoy/http/access_log.h"
 #include "envoy/http/codec.h"
 #include "envoy/http/header_map.h"
+#include "envoy/tracing/http_tracer.h"
 #include "envoy/upstream/resource_manager.h"
 
+namespace Envoy {
 namespace Router {
 
 /**
@@ -31,15 +34,61 @@ public:
 };
 
 /**
+ * CorsPolicy for Route and VirtualHost.
+ */
+class CorsPolicy {
+public:
+  virtual ~CorsPolicy() {}
+
+  /**
+   * @return std::list<std::string>& access-control-allow-origin values.
+   */
+  virtual const std::list<std::string>& allowOrigins() const PURE;
+
+  /**
+   * @return std::string access-control-allow-methods value.
+   */
+  virtual const std::string& allowMethods() const PURE;
+
+  /**
+   * @return std::string access-control-allow-headers value.
+   */
+  virtual const std::string& allowHeaders() const PURE;
+
+  /**
+   * @return std::string access-control-expose-headers value.
+   */
+  virtual const std::string& exposeHeaders() const PURE;
+
+  /**
+   * @return std::string access-control-max-age value.
+   */
+  virtual const std::string& maxAge() const PURE;
+
+  /**
+   * @return const Optional<bool>& Whether access-control-allow-credentials should be true.
+   */
+  virtual const Optional<bool>& allowCredentials() const PURE;
+
+  /**
+   * @return bool Whether CORS is enabled for the route or virtual host.
+   */
+  virtual bool enabled() const PURE;
+};
+
+/**
  * Route level retry policy.
  */
 class RetryPolicy {
 public:
   // clang-format off
-  static const uint32_t RETRY_ON_5XX             = 0x1;
-  static const uint32_t RETRY_ON_CONNECT_FAILURE = 0x2;
-  static const uint32_t RETRY_ON_RETRIABLE_4XX   = 0x4;
-  static const uint32_t RETRY_ON_REFUSED_STREAM  = 0x8;
+  static const uint32_t RETRY_ON_5XX                     = 0x1;
+  static const uint32_t RETRY_ON_CONNECT_FAILURE         = 0x2;
+  static const uint32_t RETRY_ON_RETRIABLE_4XX           = 0x4;
+  static const uint32_t RETRY_ON_REFUSED_STREAM          = 0x8;
+  static const uint32_t RETRY_ON_GRPC_CANCELLED          = 0x10;
+  static const uint32_t RETRY_ON_GRPC_DEADLINE_EXCEEDED  = 0x20;
+  static const uint32_t RETRY_ON_GRPC_RESOURCE_EXHAUSTED = 0x40;
   // clang-format on
 
   virtual ~RetryPolicy() {}
@@ -59,6 +108,11 @@ public:
    */
   virtual uint32_t retryOn() const PURE;
 };
+
+/**
+ * RetryStatus whether request should be retried or not.
+ */
+enum class RetryStatus { No, NoOverflow, Yes };
 
 /**
  * Wraps retry state for an active routed request.
@@ -81,13 +135,13 @@ public:
    * @param callback supplies the callback that will be invoked when the retry should take place.
    *                 This is used to add timed backoff, etc. The callback will never be called
    *                 inline.
-   * @return TRUE if a retry should take place. @param callback will be called at some point in the
-   *         future. Otherwise a retry should not take place and the callback will never be called.
-   *         Calling code should proceed with error handling.
+   * @return RetryStatus if a retry should take place. @param callback will be called at some point
+   *         in the future. Otherwise a retry should not take place and the callback will never be
+   *         called. Calling code should proceed with error handling.
    */
-  virtual bool shouldRetry(const Http::HeaderMap* response_headers,
-                           const Optional<Http::StreamResetReason>& reset_reason,
-                           DoRetryCallback callback) PURE;
+  virtual RetryStatus shouldRetry(const Http::HeaderMap* response_headers,
+                                  const Optional<Http::StreamResetReason>& reset_reason,
+                                  DoRetryCallback callback) PURE;
 };
 
 typedef std::unique_ptr<RetryState> RetryStatePtr;
@@ -126,11 +180,6 @@ public:
    * @return the name of the virtual cluster.
    */
   virtual const std::string& name() const PURE;
-
-  /**
-   * @return the priority of the virtual cluster.
-   */
-  virtual Upstream::ResourcePriority priority() const PURE;
 };
 
 class RateLimitPolicy;
@@ -141,6 +190,11 @@ class RateLimitPolicy;
 class VirtualHost {
 public:
   virtual ~VirtualHost() {}
+
+  /**
+   * @return const CorsPolicy* the CORS policy for this virtual host.
+   */
+  virtual const CorsPolicy* corsPolicy() const PURE;
 
   /**
    * @return const std::string& the name of the virtual host.
@@ -162,12 +216,14 @@ public:
   virtual ~HashPolicy() {}
 
   /**
-   * @return Optional<uint64_t> an optional hash value to route on given a set of HTTP headers.
-   *         A hash value might not be returned if for example the specified HTTP header does not
-   *         exist. In the future we might add additional support for hashing on origin address,
-   *         etc.
+   * @param downstream_address contains the address of the connected client host, or an
+   * empty string if the request is initiated from within this host
+   * @param headers stores the HTTP headers for the stream
+   * @return Optional<uint64_t> an optional hash value to route on. A hash value might not be
+   * returned if for example the specified HTTP header does not exist.
    */
-  virtual Optional<uint64_t> generateHash(const Http::HeaderMap& headers) const PURE;
+  virtual Optional<uint64_t> generateHash(const std::string& downstream_address,
+                                          const Http::HeaderMap& headers) const PURE;
 };
 
 /**
@@ -183,12 +239,19 @@ public:
   virtual const std::string& clusterName() const PURE;
 
   /**
+   * @return const CorsPolicy* the CORS policy for this virtual host.
+   */
+  virtual const CorsPolicy* corsPolicy() const PURE;
+
+  /**
    * Do potentially destructive header transforms on request headers prior to forwarding. For
    * example URL prefix rewriting, adding headers, etc. This should only be called ONCE
    * immediately prior to forwarding. It is done this way vs. copying for performance reasons.
    * @param headers supplies the request headers, which may be modified during this call.
+   * @param request_info holds additional information about the request.
    */
-  virtual void finalizeRequestHeaders(Http::HeaderMap& headers) const PURE;
+  virtual void finalizeRequestHeaders(Http::HeaderMap& headers,
+                                      const Http::AccessLog::RequestInfo& request_info) const PURE;
 
   /**
    * @return const HashPolicy* the optional hash policy for the route.
@@ -240,6 +303,11 @@ public:
   virtual bool autoHostRewrite() const PURE;
 
   /**
+   * @return bool true if this route should use WebSockets.
+   */
+  virtual bool useWebSocket() const PURE;
+
+  /**
    * @return const std::multimap<std::string, std::string> the opaque configuration associated
    *         with the route
    */
@@ -250,6 +318,22 @@ public:
    */
   virtual bool includeVirtualHostRateLimits() const PURE;
 };
+
+/**
+ * An interface representing the Decorator.
+ */
+class Decorator {
+public:
+  virtual ~Decorator() {}
+
+  /**
+   * This method decorates the supplied span.
+   * @param Tracing::Span& the span.
+   */
+  virtual void apply(Tracing::Span& span) const PURE;
+};
+
+typedef std::unique_ptr<const Decorator> DecoratorConstPtr;
 
 /**
  * An interface that holds a RedirectEntry or a RouteEntry for a request.
@@ -267,6 +351,11 @@ public:
    * @return the route entry or nullptr if there is no matching route for the request.
    */
   virtual const RouteEntry* routeEntry() const PURE;
+
+  /**
+   * @return the decorator or nullptr if not defined for the request.
+   */
+  virtual const Decorator* decorator() const PURE;
 };
 
 typedef std::shared_ptr<const Route> RouteConstSharedPtr;
@@ -318,4 +407,5 @@ public:
 
 typedef std::shared_ptr<const Config> ConfigConstSharedPtr;
 
-} // Router
+} // namespace Router
+} // namespace Envoy

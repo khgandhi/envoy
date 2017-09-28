@@ -9,6 +9,7 @@
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace AccessLog {
 
 class MockAccessLogManager : public AccessLogManager {
@@ -23,4 +24,5 @@ public:
   std::shared_ptr<Filesystem::MockFile> file_{new testing::NiceMock<Filesystem::MockFile>()};
 };
 
-} // AccessLog
+} // namespace AccessLog
+} // namespace Envoy

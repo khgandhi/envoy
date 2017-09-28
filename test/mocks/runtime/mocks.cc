@@ -3,10 +3,16 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
+using testing::Return;
 using testing::ReturnArg;
+using testing::_;
 
+namespace Envoy {
 namespace Runtime {
+
+MockRandomGenerator::MockRandomGenerator() { ON_CALL(*this, uuid()).WillByDefault(Return(uuid_)); }
+
+MockRandomGenerator::~MockRandomGenerator() {}
 
 MockSnapshot::MockSnapshot() { ON_CALL(*this, getInteger(_, _)).WillByDefault(ReturnArg<1>()); }
 
@@ -16,4 +22,5 @@ MockLoader::MockLoader() { ON_CALL(*this, snapshot()).WillByDefault(ReturnRef(sn
 
 MockLoader::~MockLoader() {}
 
-} // Runtime
+} // namespace Runtime
+} // namespace Envoy

@@ -6,10 +6,14 @@
 using testing::Return;
 using testing::ReturnRef;
 
+namespace Envoy {
 namespace Tracing {
 
 MockSpan::MockSpan() {}
 MockSpan::~MockSpan() {}
+
+MockFinalizer::MockFinalizer() {}
+MockFinalizer::~MockFinalizer() {}
 
 MockConfig::MockConfig() {
   ON_CALL(*this, operationName()).WillByDefault(Return(operation_name_));
@@ -23,4 +27,5 @@ MockHttpTracer::~MockHttpTracer() {}
 MockDriver::MockDriver() {}
 MockDriver::~MockDriver() {}
 
-} // Tracing
+} // namespace Tracing
+} // namespace Envoy

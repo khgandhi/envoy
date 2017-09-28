@@ -5,27 +5,8 @@
 #include "common/tracing/zipkin/util.h"
 #include "common/tracing/zipkin/zipkin_core_types.h"
 
+namespace Envoy {
 namespace Zipkin {
-
-/**
- * This struct identifies which Zipkin annotations are present in the
- * span context (see SpanContext)
- * Each member is a one-bit boolean indicating whether or not the
- * corresponding annotation is present.
- *
- * In particular, the following annotations are tracked by this struct:
- * CS: "Client Send"
- * CR: "Client Receive"
- * SS: "Server Send"
- * SR: "Server Receive"
- */
-struct AnnotationSet {
-  AnnotationSet() : cs_(false), cr_(false), ss_(false), sr_(false) {}
-  bool cs_ : 1;
-  bool cr_ : 1;
-  bool ss_ : 1;
-  bool sr_ : 1;
-};
 
 /**
  * This class represents the context of a Zipkin span. It embodies the following
@@ -37,6 +18,17 @@ public:
    * Default constructor. Creates an empty context.
    */
   SpanContext() : trace_id_(0), id_(0), parent_id_(0), is_initialized_(false) {}
+
+  /**
+   * Constructor that creates a context object from the supplied trace, span
+   * and parent ids.
+   *
+   * @param trace_id The trace id.
+   * @param id The span id.
+   * @param parent_id The parent id.
+   */
+  SpanContext(const uint64_t trace_id, const uint64_t id, const uint64_t parent_id)
+      : trace_id_(trace_id), id_(id), parent_id_(parent_id), is_initialized_(true) {}
 
   /**
    * Constructor that creates a context object from the given Zipkin span object.
@@ -104,16 +96,11 @@ public:
    */
   std::string traceIdAsHexString() const { return Hex::uint64ToHex(trace_id_); }
 
-  /**
-   * @return a struct indicating which annotations are present in the span.
-   */
-  AnnotationSet annotationSet() const { return annotation_values_; }
-
 private:
   uint64_t trace_id_;
   uint64_t id_;
   uint64_t parent_id_;
-  AnnotationSet annotation_values_;
   bool is_initialized_;
 };
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

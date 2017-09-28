@@ -13,6 +13,7 @@
 
 #include "common/json/json_loader.h"
 
+namespace Envoy {
 namespace RateLimit {
 namespace TcpFilter {
 
@@ -41,14 +42,14 @@ struct InstanceStats {
  */
 class Config {
 public:
-  Config(const Json::Object& config, Stats::Store& stats_store, Runtime::Loader& runtime);
+  Config(const Json::Object& config, Stats::Scope& scope, Runtime::Loader& runtime);
   const std::string& domain() { return domain_; }
   const std::vector<Descriptor>& descriptors() { return descriptors_; }
   Runtime::Loader& runtime() { return runtime_; }
   const InstanceStats& stats() { return stats_; }
 
 private:
-  static InstanceStats generateStats(const std::string& name, Stats::Store& store);
+  static InstanceStats generateStats(const std::string& name, Stats::Scope& scope);
 
   std::string domain_;
   std::vector<Descriptor> descriptors_;
@@ -80,7 +81,9 @@ public:
   }
 
   // Network::ConnectionCallbacks
-  void onEvent(uint32_t events) override;
+  void onEvent(Network::ConnectionEvent event) override;
+  void onAboveWriteBufferHighWatermark() override {}
+  void onBelowWriteBufferLowWatermark() override {}
 
   // RateLimit::RequestCallbacks
   void complete(LimitStatus status) override;
@@ -96,4 +99,5 @@ private:
 };
 
 } // TcpFilter
-} // RateLimit
+} // namespace RateLimit
+} // namespace Envoy

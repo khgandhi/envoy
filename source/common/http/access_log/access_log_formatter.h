@@ -6,6 +6,7 @@
 
 #include "envoy/http/access_log.h"
 
+namespace Envoy {
 namespace Http {
 namespace AccessLog {
 
@@ -145,5 +146,6 @@ private:
   std::function<std::string(const RequestInfo&)> field_extractor_;
 };
 
-} // AccessLog
-} // Http
+} // namespace AccessLog
+} // namespace Http
+} // namespace Envoy

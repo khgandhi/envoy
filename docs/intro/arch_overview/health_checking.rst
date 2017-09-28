@@ -7,7 +7,7 @@ Active health checking can be :ref:`configured <config_cluster_manager_cluster_h
 upstream cluster basis. As described in the :ref:`service discovery
 <arch_overview_service_discovery>` section, active health checking and the SDS service discovery
 type go hand in hand. However, there are other scenarios where active health checking is desired
-even when using the other service discovery types. Envoy supports two different types of health
+even when using the other service discovery types. Envoy supports three different types of health
 checking along with various settings (check interval, failures required before marking a host
 unhealthy, successes required before marking a host healthy, etc.):
 
@@ -16,9 +16,15 @@ unhealthy, successes required before marking a host healthy, etc.):
   immediately notify downstream hosts to no longer forward traffic to it.
 * **L3/L4**: During L3/L4 health checking, Envoy will send a configurable byte buffer to the
   upstream host. It expects the byte buffer to be echoed in the response if the host is to be
-  considered healthy.
+  considered healthy. Envoy also supports connect only L3/L4 health checking.
+* **Redis**: Envoy will send a Redis PING command and expect a PONG response. The upstream Redis
+  server can respond with anything other than PONG to cause an immediate active health check
+  failure.
 
-Note that Envoy also supports passive health checking via :ref:`outlier detection
+Passive health checking
+-----------------------
+
+Envoy also supports passive health checking via :ref:`outlier detection
 <arch_overview_outlier_detection>`.
 
 .. _arch_overview_health_checking_filter:
@@ -44,7 +50,28 @@ operation:
   eventually consistent view of the health state of each upstream host without overwhelming the
   local service with a large number of health check requests.
 
-Health check filter :ref:`configuration <config_http_filters_health_check>`.
+Further reading:
+
+* Health check filter :ref:`configuration <config_http_filters_health_check>`.
+* :ref:`/healthcheck/fail <operations_admin_interface_healthcheck_fail>` admin endpoint.
+* :ref:`/healthcheck/ok <operations_admin_interface_healthcheck_ok>` admin endpoint.
+
+Active health checking fast failure
+-----------------------------------
+
+When using active health checking along with passive health checking (:ref:`outlier detection
+<arch_overview_outlier_detection>`), it is common to use a long health checking interval to avoid a
+large amount of active health checking traffic. In this case, it is still useful to be able to
+quickly drain an upstream host when using the :ref:`/healthcheck/fail
+<operations_admin_interface_healthcheck_fail>` admin endpoint. To support this, the :ref:`router
+filter <config_http_filters_router>` will respond to the :ref:`x-envoy-immediate-health-check-fail
+<config_http_filters_router_x-envoy-immediate-health-check-fail>` header. If this header is set by
+an upstream host, Envoy will immediately mark the host as being failed for active health check. Note
+that this only occurs if the host's cluster has active health checking :ref:`configured
+<config_cluster_manager_cluster_hc>`. The :ref:`health checking filter
+<config_http_filters_health_check>` will automatically set this header if Envoy has been marked as
+failed via the :ref:`/healthcheck/fail <operations_admin_interface_healthcheck_fail>` admin
+endpoint.
 
 .. _arch_overview_health_checking_identity:
 

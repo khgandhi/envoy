@@ -4,30 +4,33 @@
 #include "common/stats/stats_impl.h"
 
 #include "test/integration/fake_upstream.h"
-#include "test/integration/integration.h"
+#include "test/integration/http_integration.h"
 #include "test/integration/server.h"
 #include "test/test_common/environment.h"
 
 #include "gtest/gtest.h"
 
-class UdsIntegrationTest : public BaseIntegrationTest, public testing::Test {
+namespace Envoy {
+class UdsIntegrationTest : public HttpIntegrationTest,
+                           public testing::TestWithParam<Network::Address::IpVersion> {
 public:
-  /**
-   * Global initializer for all integration tests.
-   */
-  static void SetUpTestCase() {
+  UdsIntegrationTest() : HttpIntegrationTest(Http::CodecClient::Type::HTTP1, GetParam()) {}
+
+  void createUpstreams() override {
     fake_upstreams_.emplace_back(new FakeUpstream(
         TestEnvironment::unixDomainSocketPath("udstest.1.sock"), FakeHttpConnection::Type::HTTP1));
-    fake_upstreams_.emplace_back(new FakeUpstream(
-        TestEnvironment::unixDomainSocketPath("udstest.2.sock"), FakeHttpConnection::Type::HTTP1));
-    createTestServer("test/config/integration/server_uds.json", {"http"});
-  }
 
-  /**
-   * Global destructor for all integration tests.
-   */
-  static void TearDownTestCase() {
-    test_server_.reset();
-    fake_upstreams_.clear();
+    config_helper_.addConfigModifier([&](envoy::api::v2::Bootstrap& bootstrap) -> void {
+      auto* static_resources = bootstrap.mutable_static_resources();
+      for (int i = 0; i < static_resources->clusters_size(); ++i) {
+        auto* cluster = static_resources->mutable_clusters(i);
+        for (int j = 0; j < cluster->hosts_size(); ++j) {
+          cluster->mutable_hosts(j)->clear_socket_address();
+          cluster->mutable_hosts(j)->mutable_pipe()->set_path(
+              TestEnvironment::unixDomainSocketPath("udstest.1.sock"));
+        }
+      }
+    });
   }
 };
+} // namespace Envoy

@@ -50,6 +50,7 @@ envoy_cc_library(
         "//include/envoy/event:file_event_interface",
         "//include/envoy/network:connection_handler_interface",
         "//source/common/common:logger_lib",
+        "//source/common/common:thread_lib",
     ],
 )
 
@@ -64,5 +65,22 @@ envoy_cc_library(
     deps = [
         "//source/common/common:assert_lib",
         "//source/common/common:c_smart_ptr_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "dispatched_thread_lib",
+    srcs = ["dispatched_thread.cc"],
+    hdrs = ["dispatched_thread.h"],
+    external_deps = [
+        "event",
+        "event_pthreads",
+    ],
+    deps = [
+        ":dispatcher_lib",
+        "//include/envoy/event:dispatcher_interface",
+        "//source/common/common:logger_lib",
+        "//source/common/common:thread_lib",
+        "//source/server:guarddog_lib",
     ],
 )

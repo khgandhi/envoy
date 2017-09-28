@@ -30,12 +30,11 @@
 #include "common/router/config_impl.h"
 #include "common/upstream/host_utility.h"
 
+#include "fmt/format.h"
 #include "spdlog/spdlog.h"
 
+namespace Envoy {
 namespace Server {
-
-#define MAKE_HANDLER(X)                                                                            \
-  [this](const std::string& url, Buffer::Instance& data) -> Http::Code { return X(url, data); }
 
 AdminFilter::AdminFilter(AdminImpl& parent) : parent_(parent) {}
 
@@ -84,12 +83,12 @@ bool AdminImpl::changeLogLevel(const Http::Utility::QueryParams& params) {
 
   // Now either change all levels or a single level.
   if (name == "level") {
-    log_debug("change all log levels: level='{}'", level);
+    ENVOY_LOG(debug, "change all log levels: level='{}'", level);
     for (const Logger::Logger& logger : Logger::Registry::loggers()) {
       logger.setLevel(static_cast<spdlog::level::level_enum>(level_to_use));
     }
   } else {
-    log_debug("change log level: name='{}' level='{}'", name, level);
+    ENVOY_LOG(debug, "change log level: name='{}' level='{}'", name, level);
     const Logger::Logger* logger_to_change = nullptr;
     for (const Logger::Logger& logger : Logger::Registry::loggers()) {
       if (logger.name() == name) {
@@ -112,9 +111,9 @@ void AdminImpl::addOutlierInfo(const std::string& cluster_name,
                                const Upstream::Outlier::Detector* outlier_detector,
                                Buffer::Instance& response) {
   if (outlier_detector) {
-    response.add(fmt::format("{}::outlier::success_rate_average::{}", cluster_name,
+    response.add(fmt::format("{}::outlier::success_rate_average::{}\n", cluster_name,
                              outlier_detector->successRateAverage()));
-    response.add(fmt::format("{}::outlier::success_rate_ejection_threshold::{}", cluster_name,
+    response.add(fmt::format("{}::outlier::success_rate_ejection_threshold::{}\n", cluster_name,
                              outlier_detector->successRateEjectionThreshold()));
   }
 }
@@ -147,11 +146,11 @@ Http::Code AdminImpl::handlerClusters(const std::string&, Buffer::Instance& resp
 
     for (auto& host : cluster.second.get().hosts()) {
       std::map<std::string, uint64_t> all_stats;
-      for (Stats::CounterSharedPtr counter : host->counters()) {
+      for (const Stats::CounterSharedPtr& counter : host->counters()) {
         all_stats[counter->name()] = counter->value();
       }
 
-      for (Stats::GaugeSharedPtr gauge : host->gauges()) {
+      for (const Stats::GaugeSharedPtr& gauge : host->gauges()) {
         all_stats[gauge->name()] = gauge->value();
       }
 
@@ -165,8 +164,12 @@ Http::Code AdminImpl::handlerClusters(const std::string&, Buffer::Instance& resp
                                Upstream::HostUtility::healthFlagsToString(*host)));
       response.add(fmt::format("{}::{}::weight::{}\n", cluster.second.get().info()->name(),
                                host->address()->asString(), host->weight()));
+      response.add(fmt::format("{}::{}::region::{}\n", cluster.second.get().info()->name(),
+                               host->address()->asString(), host->locality().region()));
       response.add(fmt::format("{}::{}::zone::{}\n", cluster.second.get().info()->name(),
-                               host->address()->asString(), host->zone()));
+                               host->address()->asString(), host->locality().zone()));
+      response.add(fmt::format("{}::{}::sub_zone::{}\n", cluster.second.get().info()->name(),
+                               host->address()->asString(), host->locality().sub_zone()));
       response.add(fmt::format("{}::{}::canary::{}\n", cluster.second.get().info()->name(),
                                host->address()->asString(), host->canary()));
       response.add(fmt::format("{}::{}::success_rate::{}\n", cluster.second.get().info()->name(),
@@ -243,7 +246,7 @@ Http::Code AdminImpl::handlerLogging(const std::string& url, Buffer::Instance& r
 }
 
 Http::Code AdminImpl::handlerResetCounters(const std::string&, Buffer::Instance& response) {
-  for (Stats::CounterSharedPtr counter : server_.stats().counters()) {
+  for (const Stats::CounterSharedPtr& counter : server_.stats().counters()) {
     counter->reset();
   }
 
@@ -265,11 +268,11 @@ Http::Code AdminImpl::handlerStats(const std::string&, Buffer::Instance& respons
   // We currently don't support timers locally (only via statsd) so just group all the counters
   // and gauges together, alpha sort them, and spit them out.
   std::map<std::string, uint64_t> all_stats;
-  for (Stats::CounterSharedPtr counter : server_.stats().counters()) {
+  for (const Stats::CounterSharedPtr& counter : server_.stats().counters()) {
     all_stats.emplace(counter->name(), counter->value());
   }
 
-  for (Stats::GaugeSharedPtr gauge : server_.stats().gauges()) {
+  for (const Stats::GaugeSharedPtr& gauge : server_.stats().gauges()) {
     all_stats.emplace(gauge->name(), gauge->value());
   }
 
@@ -288,9 +291,8 @@ Http::Code AdminImpl::handlerQuitQuitQuit(const std::string&, Buffer::Instance& 
 
 Http::Code AdminImpl::handlerListenerInfo(const std::string&, Buffer::Instance& response) {
   std::list<std::string> listeners;
-  int listener_index = 0;
-  while (auto listen_socket = server_.getListenSocketByIndex(listener_index++)) {
-    listeners.push_back(listen_socket->localAddress()->asString());
+  for (auto listener : server_.listenerManager().listeners()) {
+    listeners.push_back(listener.get().socket().localAddress()->asString());
   }
   response.add(Json::Factory::listAsJsonString(listeners));
   return Http::Code::OK;
@@ -300,7 +302,7 @@ Http::Code AdminImpl::handlerCerts(const std::string&, Buffer::Instance& respons
   // This set is used to track distinct certificates. We may have multiple listeners, upstreams, etc
   // using the same cert.
   std::unordered_set<std::string> context_info_set;
-  std::string context_format = "{{\n\t\"ca_cert\": \"{}\"\n\t\"cert_chain\": \"{}\"\n}}\n";
+  std::string context_format = "{{\n\t\"ca_cert\": \"{}\",\n\t\"cert_chain\": \"{}\"\n}}\n";
   server_.sslContextManager().iterateContexts([&](Ssl::Context& context) -> void {
     context_info_set.insert(fmt::format(context_format, context.getCaCertInformation(),
                                         context.getCertChainInformation()));
@@ -316,7 +318,7 @@ Http::Code AdminImpl::handlerCerts(const std::string&, Buffer::Instance& respons
 
 void AdminFilter::onComplete() {
   std::string path = request_headers_->Path()->value().c_str();
-  stream_log_info("request complete: path: {}", *callbacks_, path);
+  ENVOY_STREAM_LOG(info, "request complete: path: {}", *callbacks_, path);
 
   Buffer::OwnedImpl response;
   Http::Code code = parent_.runCallback(path, response);
@@ -342,33 +344,37 @@ AdminImpl::AdminImpl(const std::string& access_log_path, const std::string& prof
       tracing_stats_(Http::ConnectionManagerImpl::generateTracingStats("http.admin.tracing.",
                                                                        server_.stats())),
       handlers_{
-          {"/certs", "print certs on machine", MAKE_HANDLER(handlerCerts)},
-          {"/clusters", "upstream cluster status", MAKE_HANDLER(handlerClusters)},
-          {"/cpuprofiler", "enable/disable the CPU profiler", MAKE_HANDLER(handlerCpuProfiler)},
+          {"/certs", "print certs on machine", MAKE_ADMIN_HANDLER(handlerCerts), false},
+          {"/clusters", "upstream cluster status", MAKE_ADMIN_HANDLER(handlerClusters), false},
+          {"/cpuprofiler", "enable/disable the CPU profiler",
+           MAKE_ADMIN_HANDLER(handlerCpuProfiler), false},
           {"/healthcheck/fail", "cause the server to fail health checks",
-           MAKE_HANDLER(handlerHealthcheckFail)},
+           MAKE_ADMIN_HANDLER(handlerHealthcheckFail), false},
           {"/healthcheck/ok", "cause the server to pass health checks",
-           MAKE_HANDLER(handlerHealthcheckOk)},
+           MAKE_ADMIN_HANDLER(handlerHealthcheckOk), false},
           {"/hot_restart_version", "print the hot restart compatability version",
-           MAKE_HANDLER(handlerHotRestartVersion)},
-          {"/logging", "query/change logging levels", MAKE_HANDLER(handlerLogging)},
-          {"/quitquitquit", "exit the server", MAKE_HANDLER(handlerQuitQuitQuit)},
-          {"/reset_counters", "reset all counters to zero", MAKE_HANDLER(handlerResetCounters)},
+           MAKE_ADMIN_HANDLER(handlerHotRestartVersion), false},
+          {"/logging", "query/change logging levels", MAKE_ADMIN_HANDLER(handlerLogging), false},
+          {"/quitquitquit", "exit the server", MAKE_ADMIN_HANDLER(handlerQuitQuitQuit), false},
+          {"/reset_counters", "reset all counters to zero",
+           MAKE_ADMIN_HANDLER(handlerResetCounters), false},
           {"/server_info", "print server version/status information",
-           MAKE_HANDLER(handlerServerInfo)},
-          {"/stats", "print server stats", MAKE_HANDLER(handlerStats)},
-          {"/listeners", "print listener addresses", MAKE_HANDLER(handlerListenerInfo)}} {
+           MAKE_ADMIN_HANDLER(handlerServerInfo), false},
+          {"/stats", "print server stats", MAKE_ADMIN_HANDLER(handlerStats), false},
+          {"/listeners", "print listener addresses", MAKE_ADMIN_HANDLER(handlerListenerInfo),
+           false}} {
 
   if (!address_out_path.empty()) {
     std::ofstream address_out_file(address_out_path);
     if (!address_out_file) {
-      log().critical("cannot open admin address output file {} for writing.", address_out_path);
+      ENVOY_LOG(critical, "cannot open admin address output file {} for writing.",
+                address_out_path);
     } else {
       address_out_file << socket_->localAddress()->asString();
     }
   }
 
-  access_logs_.emplace_back(new Http::AccessLog::InstanceImpl(
+  access_logs_.emplace_back(new Http::AccessLog::FileAccessLog(
       access_log_path, {}, Http::AccessLog::AccessLogFormatUtils::defaultAccessLogFormatter(),
       server.accessLogManager()));
 }
@@ -376,12 +382,14 @@ AdminImpl::AdminImpl(const std::string& access_log_path, const std::string& prof
 Http::ServerConnectionPtr AdminImpl::createCodec(Network::Connection& connection,
                                                  const Buffer::Instance&,
                                                  Http::ServerConnectionCallbacks& callbacks) {
-  return Http::ServerConnectionPtr{new Http::Http1::ServerConnectionImpl(connection, callbacks)};
+  return Http::ServerConnectionPtr{
+      new Http::Http1::ServerConnectionImpl(connection, callbacks, Http::Http1Settings())};
 }
 
 bool AdminImpl::createFilterChain(Network::Connection& connection) {
   connection.addReadFilter(Network::ReadFilterSharedPtr{new Http::ConnectionManagerImpl(
-      *this, server_.drainManager(), server_.random(), server_.httpTracer(), server_.runtime())});
+      *this, server_.drainManager(), server_.random(), server_.httpTracer(), server_.runtime(),
+      server_.localInfo(), server_.clusterManager())});
   return true;
 }
 
@@ -422,4 +430,26 @@ const Network::Address::Instance& AdminImpl::localAddress() {
   return *server_.localInfo().address();
 }
 
-} // Server
+bool AdminImpl::addHandler(const std::string& prefix, const std::string& help_text,
+                           HandlerCb callback, bool removable) {
+  auto it = std::find_if(handlers_.cbegin(), handlers_.cend(),
+                         [&prefix](const UrlHandler& entry) { return prefix == entry.prefix_; });
+  if (it == handlers_.end()) {
+    handlers_.push_back({prefix, help_text, callback, removable});
+    return true;
+  }
+  return false;
+}
+
+bool AdminImpl::removeHandler(const std::string& prefix) {
+  const uint size_before_removal = handlers_.size();
+  handlers_.remove_if(
+      [&prefix](const UrlHandler& entry) { return prefix == entry.prefix_ && entry.removable_; });
+  if (handlers_.size() != size_before_removal) {
+    return true;
+  }
+  return false;
+}
+
+} // namespace Server
+} // namespace Envoy

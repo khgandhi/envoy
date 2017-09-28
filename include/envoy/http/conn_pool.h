@@ -8,6 +8,7 @@
 #include "envoy/http/codec.h"
 #include "envoy/upstream/upstream.h"
 
+namespace Envoy {
 namespace Http {
 namespace ConnectionPool {
 
@@ -98,5 +99,6 @@ public:
 
 typedef std::unique_ptr<Instance> InstancePtr;
 
-} // ConnectionPool
-} // Http
+} // namespace ConnectionPool
+} // namespace Http
+} // namespace Envoy

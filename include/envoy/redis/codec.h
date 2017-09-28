@@ -7,6 +7,7 @@
 #include "envoy/buffer/buffer.h"
 #include "envoy/common/exception.h"
 
+namespace Envoy {
 namespace Redis {
 
 /**
@@ -130,4 +131,5 @@ public:
   ProtocolError(const std::string& error) : EnvoyException(error) {}
 };
 
-} // Redis
+} // namespace Redis
+} // namespace Envoy

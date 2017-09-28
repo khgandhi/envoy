@@ -3,40 +3,45 @@
 #include <string>
 
 #include "envoy/network/connection.h"
-#include "envoy/server/instance.h"
+#include "envoy/registry/registry.h"
 
 #include "common/json/config_schemas.h"
 #include "common/mongo/proxy.h"
 
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
-NetworkFilterFactoryCb MongoProxyFilterConfigFactory::tryCreateFilterFactory(
-    NetworkFilterType type, const std::string& name, const Json::Object& config,
-    Server::Instance& server) {
-  if (type != NetworkFilterType::Both || name != "mongo_proxy") {
-    return nullptr;
-  }
-
+NetworkFilterFactoryCb
+MongoProxyFilterConfigFactory::createFilterFactory(const Json::Object& config,
+                                                   FactoryContext& context) {
   config.validateSchema(Json::Schema::MONGO_PROXY_NETWORK_FILTER_SCHEMA);
 
   std::string stat_prefix = "mongo." + config.getString("stat_prefix") + ".";
   Mongo::AccessLogSharedPtr access_log;
   if (config.hasObject("access_log")) {
     access_log.reset(
-        new Mongo::AccessLog(config.getString("access_log"), server.accessLogManager()));
+        new Mongo::AccessLog(config.getString("access_log"), context.accessLogManager()));
   }
 
-  return [stat_prefix, &server, access_log](Network::FilterManager& filter_manager) -> void {
-    filter_manager.addFilter(Network::FilterSharedPtr{
-        new Mongo::ProdProxyFilter(stat_prefix, server.stats(), server.runtime(), access_log)});
+  Mongo::FaultConfigSharedPtr fault_config;
+  if (config.hasObject("fault")) {
+    fault_config = std::make_shared<Mongo::FaultConfig>(*config.getObject("fault"));
+  }
+
+  return [stat_prefix, &context, access_log,
+          fault_config](Network::FilterManager& filter_manager) -> void {
+    filter_manager.addFilter(std::make_shared<Mongo::ProdProxyFilter>(
+        stat_prefix, context.scope(), context.runtime(), access_log, fault_config));
   };
 }
 
 /**
- * Static registration for the mongo filter. @see RegisterNetworkFilterConfigFactory.
+ * Static registration for the mongo filter. @see RegisterFactory.
  */
-static RegisterNetworkFilterConfigFactory<MongoProxyFilterConfigFactory> registered_;
+static Registry::RegisterFactory<MongoProxyFilterConfigFactory, NamedNetworkFilterConfigFactory>
+    registered_;
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

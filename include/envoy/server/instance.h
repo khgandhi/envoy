@@ -14,12 +14,14 @@
 #include "envoy/server/admin.h"
 #include "envoy/server/drain_manager.h"
 #include "envoy/server/hot_restart.h"
+#include "envoy/server/listener_manager.h"
 #include "envoy/server/options.h"
 #include "envoy/ssl/context_manager.h"
 #include "envoy/thread_local/thread_local.h"
 #include "envoy/tracing/http_tracer.h"
 #include "envoy/upstream/cluster_manager.h"
 
+namespace Envoy {
 namespace Server {
 
 /**
@@ -56,15 +58,9 @@ public:
   virtual Event::Dispatcher& dispatcher() PURE;
 
   /**
-   * @return Network::DnsResolver& the singleton DNS resolver for the server.
+   * @return Network::DnsResolverSharedPtr the singleton DNS resolver for the server.
    */
-  virtual Network::DnsResolver& dnsResolver() PURE;
-
-  /**
-   * @return TRUE if the server is currently draining. No new connections will be received and
-   *         filters should shed connections where possible.
-   */
-  virtual bool draining() PURE;
+  virtual Network::DnsResolverSharedPtr dnsResolver() PURE;
 
   /**
    * Close the server's listening sockets and begin draining the listeners.
@@ -72,9 +68,9 @@ public:
   virtual void drainListeners() PURE;
 
   /**
-   * @return DrainManager& singleton for use by the entire server.
+   * @return const DrainManager& singleton for use by the entire server.
    */
-  virtual DrainManager& drainManager() PURE;
+  virtual const DrainManager& drainManager() PURE;
 
   /**
    * @return AccessLogManager for use by the entire server.
@@ -85,20 +81,6 @@ public:
    * Toggle whether the server fails or passes external healthchecks.
    */
   virtual void failHealthcheck(bool fail) PURE;
-
-  /**
-   * Fetch a listen socket fd based on the listening address.
-   * @param address supplies the address to look up.
-   * @return the fd or -1 if there is no listening socket for the address.
-   */
-  virtual int getListenSocketFd(const std::string& address) PURE;
-
-  /**
-   * Obtain a listen socket pointer based on the listener config array index.
-   * @param index array index.
-   * @return Network::ListenSocket* when index is in bounds, nullptr otherwise.
-   */
-  virtual Network::ListenSocket* getListenSocketByIndex(uint32_t index) PURE;
 
   /**
    * Fetch server stats specific to this process vs. global shared stats in a hot restart scenario.
@@ -125,6 +107,11 @@ public:
    *         will start listening.
    */
   virtual Init::Manager& initManager() PURE;
+
+  /**
+   * @return the server's listener manager.
+   */
+  virtual ListenerManager& listenerManager() PURE;
 
   /**
    * @return the server's CLI options.
@@ -158,6 +145,11 @@ public:
   virtual void shutdownAdmin() PURE;
 
   /**
+   * @return Singleton::Manager& the server-wide singleton manager.
+   */
+  virtual Singleton::Manager& singletonManager() PURE;
+
+  /**
    * @return the time that the server started during the current hot restart epoch.
    */
   virtual time_t startTimeCurrentEpoch() PURE;
@@ -189,4 +181,5 @@ public:
   virtual const LocalInfo::LocalInfo& localInfo() PURE;
 };
 
-} // Server
+} // namespace Server
+} // namespace Envoy

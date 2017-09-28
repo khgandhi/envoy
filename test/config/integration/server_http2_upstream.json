@@ -1,14 +1,14 @@
 {
   "listeners": [
   {
-    "address": "tcp://127.0.0.1:0",
+    "address": "tcp://{{ ip_loopback_address }}:0",
     "filters": [
     {
       "type": "read",
       "name": "http_connection_manager",
       "config": {
         "codec_type": "http2",
-        "drain_timeout_ms": 10,
+        "drain_timeout_ms": 5000,
         "access_log": [
         {
           "path": "/dev/null",
@@ -82,14 +82,14 @@
     }]
   },
   {
-    "address": "tcp://127.0.0.1:0",
+    "address": "tcp://{{ ip_loopback_address }}:0",
     "filters": [
     {
       "type": "read",
       "name": "http_connection_manager",
       "config": {
         "codec_type": "http2",
-        "drain_timeout_ms": 10,
+        "drain_timeout_ms": 5000,
         "access_log": [
         {
           "path": "/dev/null",
@@ -169,7 +169,7 @@
     }]
   },
   {
-    "address": "tcp://127.0.0.1:0",
+    "address": "tcp://{{ ip_loopback_address }}:0",
     "filters": [
     {
       "type": "read",
@@ -253,27 +253,72 @@
         ]
       }
     }]
+  },
+  {
+    "address": "tcp://{{ ip_loopback_address }}:0",
+    "per_connection_buffer_limit_bytes": 1024,
+    "filters": [
+    {
+      "type": "read",
+      "name": "http_connection_manager",
+      "config": {
+        "codec_type": "http2",
+        "http2_settings": {
+           "initial_stream_window_size": 65535
+        },
+        "drain_timeout_ms": 5000,
+        "stat_prefix": "router",
+        "route_config":
+        {
+          "virtual_hosts": [
+            {
+              "name": "integration",
+              "domains": [ "*" ],
+              "routes": [
+                {
+                  "prefix": "/test/long/url",
+                  "cluster": "cluster_3"
+                }
+              ]
+            }
+          ]
+        },
+        "filters": [
+          { "type": "decoder", "name": "router", "config": {} }
+        ]
+      }
+    }]
   }],
 
-  "admin": { "access_log_path": "/dev/null", "address": "tcp://127.0.0.1:0" },
+  "admin": { "access_log_path": "/dev/null", "address": "tcp://{{ ip_loopback_address }}:0" },
 
   "cluster_manager": {
     "clusters": [
     {
       "name": "cluster_1",
-      "connect_timeout_ms": 250,
+      "connect_timeout_ms": 5000,
       "type": "static",
       "lb_type": "round_robin",
       "features": "http2",
-      "hosts": [{"url": "tcp://127.0.0.1:{{ upstream_0 }}"}]
+      "hosts": [{"url": "tcp://{{ ip_loopback_address }}:{{ upstream_0 }}"}]
     },
     {
       "name": "cluster_2",
-      "connect_timeout_ms": 250,
+      "connect_timeout_ms": 5000,
       "type": "strict_dns",
       "lb_type": "round_robin",
       "features": "http2",
+      "dns_lookup_family": "{{ dns_lookup_family }}",
       "hosts": [{"url": "tcp://localhost:{{ upstream_1 }}"}]
+    },
+    {
+      "name": "cluster_3",
+      "per_connection_buffer_limit_bytes": 1024,
+      "connect_timeout_ms": 5000,
+      "type": "static",
+      "lb_type": "round_robin",
+      "features": "http2",
+      "hosts": [{"url": "tcp://{{ ip_loopback_address }}:{{ upstream_0 }}"}]
     }]
   }
 }

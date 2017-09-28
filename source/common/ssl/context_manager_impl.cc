@@ -6,6 +6,7 @@
 #include "common/common/assert.h"
 #include "common/ssl/context_impl.h"
 
+namespace Envoy {
 namespace Ssl {
 
 ContextManagerImpl::~ContextManagerImpl() { ASSERT(contexts_.empty()); }
@@ -17,7 +18,7 @@ void ContextManagerImpl::releaseContext(Context* context) {
 }
 
 ClientContextPtr ContextManagerImpl::createSslClientContext(Stats::Scope& scope,
-                                                            ContextConfig& config) {
+                                                            ClientContextConfig& config) {
 
   ClientContextPtr context(new ClientContextImpl(*this, scope, config));
   std::unique_lock<std::mutex> lock(contexts_lock_);
@@ -26,7 +27,7 @@ ClientContextPtr ContextManagerImpl::createSslClientContext(Stats::Scope& scope,
 }
 
 ServerContextPtr ContextManagerImpl::createSslServerContext(Stats::Scope& scope,
-                                                            ContextConfig& config) {
+                                                            ServerContextConfig& config) {
   ServerContextPtr context(new ServerContextImpl(*this, scope, config, runtime_));
   std::unique_lock<std::mutex> lock(contexts_lock_);
   contexts_.emplace_back(context.get());
@@ -49,4 +50,5 @@ void ContextManagerImpl::iterateContexts(std::function<void(Context&)> callback)
   }
 }
 
-} // Ssl
+} // namespace Ssl
+} // namespace Envoy

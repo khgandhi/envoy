@@ -2,11 +2,11 @@
 
 #include "gtest/gtest.h"
 
+namespace Envoy {
 namespace Zipkin {
 
 TEST(ZipkinSpanBufferTest, defaultConstructorEndToEnd) {
   SpanBuffer buffer;
-  SpanPtr span(new Span());
 
   EXPECT_EQ(0ULL, buffer.pendingSpans());
   EXPECT_EQ("[]", buffer.toStringifiedJsonArray());
@@ -15,7 +15,7 @@ TEST(ZipkinSpanBufferTest, defaultConstructorEndToEnd) {
   EXPECT_EQ(0ULL, buffer.pendingSpans());
   EXPECT_EQ("[]", buffer.toStringifiedJsonArray());
 
-  buffer.addSpan(std::move(span));
+  buffer.addSpan(Span());
   EXPECT_EQ(1ULL, buffer.pendingSpans());
   std::string expected_json_array_string = "[{"
                                            R"("traceId":"0000000000000000",)"
@@ -30,8 +30,8 @@ TEST(ZipkinSpanBufferTest, defaultConstructorEndToEnd) {
   EXPECT_EQ(0ULL, buffer.pendingSpans());
   EXPECT_EQ("[]", buffer.toStringifiedJsonArray());
 
-  buffer.addSpan(SpanPtr(new Span()));
-  buffer.addSpan(SpanPtr(new Span()));
+  buffer.addSpan(Span());
+  buffer.addSpan(Span());
   expected_json_array_string = "["
                                "{"
                                R"("traceId":"0000000000000000",)"
@@ -58,12 +58,11 @@ TEST(ZipkinSpanBufferTest, defaultConstructorEndToEnd) {
 
 TEST(ZipkinSpanBufferTest, sizeConstructorEndtoEnd) {
   SpanBuffer buffer(2);
-  SpanPtr span(new Span());
 
   EXPECT_EQ(0ULL, buffer.pendingSpans());
   EXPECT_EQ("[]", buffer.toStringifiedJsonArray());
 
-  buffer.addSpan(std::move(span));
+  buffer.addSpan(Span());
   EXPECT_EQ(1ULL, buffer.pendingSpans());
   std::string expected_json_array_string = "[{"
                                            R"("traceId":"0000000000000000",)"
@@ -78,8 +77,8 @@ TEST(ZipkinSpanBufferTest, sizeConstructorEndtoEnd) {
   EXPECT_EQ(0ULL, buffer.pendingSpans());
   EXPECT_EQ("[]", buffer.toStringifiedJsonArray());
 
-  buffer.addSpan(SpanPtr(new Span()));
-  buffer.addSpan(SpanPtr(new Span()));
+  buffer.addSpan(Span());
+  buffer.addSpan(Span());
   expected_json_array_string = "["
                                "{"
                                R"("traceId":"0000000000000000",)"
@@ -102,4 +101,5 @@ TEST(ZipkinSpanBufferTest, sizeConstructorEndtoEnd) {
   EXPECT_EQ(0ULL, buffer.pendingSpans());
   EXPECT_EQ("[]", buffer.toStringifiedJsonArray());
 }
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

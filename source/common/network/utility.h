@@ -3,35 +3,14 @@
 #include <cstdint>
 #include <list>
 #include <string>
-#include <vector>
 
-#include "envoy/json/json_object.h"
 #include "envoy/network/connection.h"
 #include "envoy/stats/stats.h"
 
+#include "api/address.pb.h"
+
+namespace Envoy {
 namespace Network {
-
-/**
- * Utility class for keeping a list of IPV4 addresses and masks, and then determining whether an
- * IP address is in the address/mask list.
- */
-class IpList {
-public:
-  IpList(const std::vector<std::string>& subnets);
-  IpList(const Json::Object& config, const std::string& member_name);
-  IpList(){};
-
-  bool contains(const Address::Instance& address) const;
-  bool empty() const { return ipv4_list_.empty(); }
-
-private:
-  struct Ipv4Entry {
-    uint32_t ipv4_address_;
-    uint32_t ipv4_mask_;
-  };
-
-  std::vector<Ipv4Entry> ipv4_list_;
-};
 
 /**
  * Utility class to represent TCP/UDP port range
@@ -79,9 +58,56 @@ public:
   static uint32_t portFromTcpUrl(const std::string& url);
 
   /**
+   * Parse an internet host address (IPv4 or IPv6) and create an Instance from it. The address must
+   * not include a port number. Throws EnvoyException if unable to parse the address.
+   * @param ip_address string to be parsed as an internet address.
+   * @param port optional port to include in Instance created from ip_address, 0 by default.
+   * @return pointer to the Instance, or nullptr if unable to parse the address.
+   */
+  static Address::InstanceConstSharedPtr parseInternetAddress(const std::string& ip_address,
+                                                              uint16_t port = 0);
+
+  /**
+   * Parse an internet host address (IPv4 or IPv6) AND port, and create an Instance from it. Throws
+   * EnvoyException if unable to parse the address.  This is needed when a shared pointer is needed
+   * but only a raw instance is available.
+   * @param Address::Ip& to be copied to the new instance.
+   * @return pointer to the Instance.
+   */
+  static Address::InstanceConstSharedPtr copyInternetAddressAndPort(const Address::Ip& ip);
+
+  /**
+   * Create a new Intance from an internet host address (IPv4 or IPv6) and port.
+   * @param ip_addr string to be parsed as an internet address and port. Examples:
+   *        - "1.2.3.4:80"
+   *        - "[1234:5678::9]:443"
+   * @return pointer to the Instance.
+   */
+  static Address::InstanceConstSharedPtr parseInternetAddressAndPort(const std::string& ip_address);
+
+  /**
+   * Create an Instance from a envoy::api::v2::Address.
+   * @param address message.
+   * @return pointer to the Instance.
+   */
+  static Address::InstanceConstSharedPtr fromProtoAddress(const envoy::api::v2::Address& address);
+
+  /**
+   * Create an Instance from a envoy::api::v2::SocketAddress.
+   * @param socket address message.
+   * @return pointer to the Instance.
+   */
+  static Address::InstanceConstSharedPtr
+  fromProtoSocketAddress(const envoy::api::v2::SocketAddress& address);
+
+  /**
+   * Get the local address of the first interface address that is of type
+   * version and is not a loopback address. If no matches are found, return the
+   * loopback address of type version.
+   * @param the local address IP version.
    * @return the local IP address of the server
    */
-  static Address::InstanceConstSharedPtr getLocalAddress();
+  static Address::InstanceConstSharedPtr getLocalAddress(const Address::IpVersion version);
 
   /**
    * Determine whether this is an internal (RFC1918) address.
@@ -91,6 +117,7 @@ public:
 
   /**
    * Check if address is loopback address.
+   * @param address IP address to check.
    * @return true if so, otherwise false
    */
   static bool isLoopbackAddress(const Address::Instance& address);
@@ -123,6 +150,14 @@ public:
   static Address::InstanceConstSharedPtr getIpv6AnyAddress();
 
   /**
+   * @param address IP address instance.
+   * @param port to update.
+   * @return Address::InstanceConstSharedPtr a new address instance with updated port.
+   */
+  static Address::InstanceConstSharedPtr getAddressWithPort(const Address::Instance& address,
+                                                            uint32_t port);
+
+  /**
    * Retrieve the original destination address from an accepted fd.
    * The address (IP and port) may be not local and the port may differ from
    * the listener port if the packets were redirected using iptables
@@ -148,6 +183,10 @@ public:
    * @return whether the port appears in at least one of the ranges in the list
    */
   static bool portInRangeList(const Address::Instance& address, const std::list<PortRange>& list);
+
+private:
+  static void throwWithMalformedIp(const std::string& ip_address);
 };
 
-} // Network
+} // namespace Network
+} // namespace Envoy

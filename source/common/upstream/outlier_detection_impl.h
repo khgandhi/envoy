@@ -15,17 +15,18 @@
 #include "envoy/upstream/outlier_detection.h"
 #include "envoy/upstream/upstream.h"
 
-#include "common/json/json_loader.h"
+#include "api/cds.pb.h"
 
+namespace Envoy {
 namespace Upstream {
 namespace Outlier {
 
 /**
- * Null host sink implementation.
+ * Null host monitor implementation.
  */
-class DetectorHostSinkNullImpl : public DetectorHostSink {
+class DetectorHostMonitorNullImpl : public DetectorHostMonitor {
 public:
-  // Upstream::Outlier::DetectorHostSink
+  // Upstream::Outlier::DetectorHostMonitor
   uint32_t numEjections() override { return 0; }
   void putHttpResponseCode(uint64_t) override {}
   void putResponseTime(std::chrono::milliseconds) override {}
@@ -38,11 +39,12 @@ private:
 };
 
 /**
- * Factory for creating a detector from a JSON configuration.
+ * Factory for creating a detector from a proto configuration.
  */
 class DetectorImplFactory {
 public:
-  static DetectorSharedPtr createForCluster(Cluster& cluster, const Json::Object& cluster_config,
+  static DetectorSharedPtr createForCluster(Cluster& cluster,
+                                            const envoy::api::v2::Cluster& cluster_config,
                                             Event::Dispatcher& dispatcher, Runtime::Loader& runtime,
                                             EventLoggerSharedPtr event_logger);
 };
@@ -97,11 +99,11 @@ private:
 class DetectorImpl;
 
 /**
- * Implementation of DetectorHostSink for the generic detector.
+ * Implementation of DetectorHostMonitor for the generic detector.
  */
-class DetectorHostSinkImpl : public DetectorHostSink {
+class DetectorHostMonitorImpl : public DetectorHostMonitor {
 public:
-  DetectorHostSinkImpl(std::shared_ptr<DetectorImpl> detector, HostSharedPtr host)
+  DetectorHostMonitorImpl(std::shared_ptr<DetectorImpl> detector, HostSharedPtr host)
       : detector_(detector), host_(host), success_rate_(-1) {
     // Point the success_rate_accumulator_bucket_ pointer to a bucket.
     updateCurrentSuccessRateBucket();
@@ -112,8 +114,9 @@ public:
   void updateCurrentSuccessRateBucket();
   SuccessRateAccumulator& successRateAccumulator() { return success_rate_accumulator_; }
   void successRate(double new_success_rate) { success_rate_ = new_success_rate; }
+  void resetConsecutive5xx() { consecutive_5xx_ = 0; }
 
-  // Upstream::Outlier::DetectorHostSink
+  // Upstream::Outlier::DetectorHostMonitor
   uint32_t numEjections() override { return num_ejections_; }
   void putHttpResponseCode(uint64_t response_code) override;
   void putResponseTime(std::chrono::milliseconds) override {}
@@ -157,7 +160,7 @@ struct DetectionStats {
  */
 class DetectorConfig {
 public:
-  DetectorConfig(const Json::Object& json_config);
+  DetectorConfig(const envoy::api::v2::Cluster::OutlierDetection& config);
 
   uint64_t intervalMs() { return interval_ms_; }
   uint64_t baseEjectionTimeMs() { return base_ejection_time_ms_; }
@@ -189,8 +192,8 @@ private:
 class DetectorImpl : public Detector, public std::enable_shared_from_this<DetectorImpl> {
 public:
   static std::shared_ptr<DetectorImpl>
-  create(const Cluster& cluster, const Json::Object& json_config, Event::Dispatcher& dispatcher,
-         Runtime::Loader& runtime, MonotonicTimeSource& time_source,
+  create(const Cluster& cluster, const envoy::api::v2::Cluster::OutlierDetection& config,
+         Event::Dispatcher& dispatcher, Runtime::Loader& runtime, MonotonicTimeSource& time_source,
          EventLoggerSharedPtr event_logger);
   ~DetectorImpl();
 
@@ -204,13 +207,13 @@ public:
   double successRateEjectionThreshold() const override { return success_rate_ejection_threshold_; }
 
 private:
-  DetectorImpl(const Cluster& cluster, const Json::Object& json_config,
+  DetectorImpl(const Cluster& cluster, const envoy::api::v2::Cluster::OutlierDetection& config,
                Event::Dispatcher& dispatcher, Runtime::Loader& runtime,
                MonotonicTimeSource& time_source, EventLoggerSharedPtr event_logger);
 
-  void addHostSink(HostSharedPtr host);
+  void addHostMonitor(HostSharedPtr host);
   void armIntervalTimer();
-  void checkHostForUneject(HostSharedPtr host, DetectorHostSinkImpl* sink, MonotonicTime now);
+  void checkHostForUneject(HostSharedPtr host, DetectorHostMonitorImpl* monitor, MonotonicTime now);
   void ejectHost(HostSharedPtr host, EjectionType type);
   static DetectionStats generateStats(Stats::Scope& scope);
   void initialize(const Cluster& cluster);
@@ -227,7 +230,7 @@ private:
   DetectionStats stats_;
   Event::TimerPtr interval_timer_;
   std::list<ChangeStateCb> callbacks_;
-  std::unordered_map<HostSharedPtr, DetectorHostSinkImpl*> host_sinks_;
+  std::unordered_map<HostSharedPtr, DetectorHostMonitorImpl*> host_monitors_;
   EventLoggerSharedPtr event_logger_;
   double success_rate_average_;
   double success_rate_ejection_threshold_;
@@ -279,5 +282,6 @@ public:
                                double success_rate_stdev_factor);
 };
 
-} // Outlier
-} // Upstream
+} // namespace Outlier
+} // namespace Upstream
+} // namespace Envoy

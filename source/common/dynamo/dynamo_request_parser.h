@@ -8,6 +8,7 @@
 
 #include "common/json/json_loader.h"
 
+namespace Envoy {
 namespace Dynamo {
 
 /*
@@ -99,4 +100,5 @@ private:
   RequestParser() {}
 };
 
-} // Dynamo
+} // namespace Dynamo
+} // namespace Envoy

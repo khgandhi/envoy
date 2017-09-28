@@ -10,6 +10,7 @@
 
 #include "common/common/logger.h"
 
+namespace Envoy {
 namespace Bson {
 
 /**
@@ -260,4 +261,5 @@ private:
   std::list<FieldPtr> fields_;
 };
 
-} // Bson
+} // namespace Bson
+} // namespace Envoy

@@ -10,103 +10,94 @@
 #include "envoy/event/signal.h"
 #include "envoy/event/timer.h"
 #include "envoy/network/dns.h"
-#include "envoy/network/listener.h"
 #include "envoy/server/options.h"
 #include "envoy/upstream/cluster_manager.h"
 
 #include "common/api/api_impl.h"
 #include "common/common/utility.h"
 #include "common/common/version.h"
-#include "common/json/config_schemas.h"
+#include "common/config/bootstrap_json.h"
+#include "common/local_info/local_info_impl.h"
 #include "common/memory/stats.h"
-#include "common/network/utility.h"
+#include "common/network/address_impl.h"
+#include "common/protobuf/utility.h"
+#include "common/router/rds_impl.h"
 #include "common/runtime/runtime_impl.h"
-#include "common/stats/statsd.h"
+#include "common/singleton/manager_impl.h"
+#include "common/upstream/cluster_manager_impl.h"
 
 #include "server/configuration_impl.h"
+#include "server/connection_handler_impl.h"
 #include "server/guarddog_impl.h"
 #include "server/test_hooks.h"
-#include "server/worker.h"
 
-#include "spdlog/spdlog.h"
+#include "api/bootstrap.pb.h"
 
+namespace Envoy {
 namespace Server {
 
-void InitManagerImpl::initialize(std::function<void()> callback) {
-  ASSERT(state_ == State::NotInitialized);
-  if (targets_.empty()) {
-    callback();
-    state_ = State::Initialized;
-  } else {
-    callback_ = callback;
-    state_ = State::Initializing;
-    for (auto target : targets_) {
-      target->initialize([this, target]() -> void {
-        ASSERT(std::find(targets_.begin(), targets_.end(), target) != targets_.end());
-        targets_.remove(target);
-        if (targets_.empty()) {
-          state_ = State::Initialized;
-          callback_();
-        }
-      });
-    }
-  }
-}
-
-void InitManagerImpl::registerTarget(Init::Target& target) {
-  ASSERT(state_ == State::NotInitialized);
-  targets_.push_back(&target);
-}
-
-InstanceImpl::InstanceImpl(Options& options, TestHooks& hooks, HotRestart& restarter,
-                           Stats::StoreRoot& store, Thread::BasicLockable& access_log_lock,
-                           ComponentFactory& component_factory,
-                           const LocalInfo::LocalInfo& local_info)
+InstanceImpl::InstanceImpl(Options& options, Network::Address::InstanceConstSharedPtr local_address,
+                           TestHooks& hooks, HotRestart& restarter, Stats::StoreRoot& store,
+                           Thread::BasicLockable& access_log_lock,
+                           ComponentFactory& component_factory, ThreadLocal::Instance& tls)
     : options_(options), restarter_(restarter), start_time_(time(nullptr)),
-      original_start_time_(start_time_), stats_store_(store),
-      server_stats_{ALL_SERVER_STATS(POOL_GAUGE_PREFIX(stats_store_, "server."))},
-      handler_(log(), Api::ApiPtr{new Api::Impl(options.fileFlushIntervalMsec())}),
-      dns_resolver_(handler_.dispatcher().createDnsResolver()), local_info_(local_info),
-      access_log_manager_(handler_.api(), handler_.dispatcher(), access_log_lock, store) {
-
-  failHealthcheck(false);
-
-  uint64_t version_int;
-  if (!StringUtil::atoul(VersionInfo::revision().substr(0, 6).c_str(), version_int, 16)) {
-    throw EnvoyException("compiled GIT SHA is invalid. Invalid build.");
-  }
-  server_stats_.version_.set(version_int);
-
-  if (!local_info_.address()) {
-    throw EnvoyException("could not resolve local address");
-  }
-
-  restarter_.initialize(handler_.dispatcher(), *this);
-  drain_manager_ = component_factory.createDrainManager(*this);
+      original_start_time_(start_time_),
+      stats_store_(store), server_stats_{ALL_SERVER_STATS(
+                               POOL_GAUGE_PREFIX(stats_store_, "server."))},
+      thread_local_(tls), api_(new Api::Impl(options.fileFlushIntervalMsec())),
+      dispatcher_(api_->allocateDispatcher()), singleton_manager_(new Singleton::ManagerImpl()),
+      handler_(new ConnectionHandlerImpl(ENVOY_LOGGER(), *dispatcher_)),
+      listener_component_factory_(*this), worker_factory_(thread_local_, *api_, hooks),
+      dns_resolver_(dispatcher_->createDnsResolver({})),
+      access_log_manager_(*api_, *dispatcher_, access_log_lock, store) {
 
   try {
-    initialize(options, hooks, component_factory);
+    if (!options.logPath().empty()) {
+      try {
+        Logger::Registry::getSink()->logToFile(options.logPath(), access_log_manager_);
+      } catch (const EnvoyException& e) {
+        throw EnvoyException(fmt::format("Failed to open log-file '{}'.  e.what(): {}",
+                                         options.logPath(), e.what()));
+      }
+    }
+
+    failHealthcheck(false);
+
+    uint64_t version_int;
+    if (!StringUtil::atoul(VersionInfo::revision().substr(0, 6).c_str(), version_int, 16)) {
+      throw EnvoyException("compiled GIT SHA is invalid. Invalid build.");
+    }
+    server_stats_.version_.set(version_int);
+
+    restarter_.initialize(*dispatcher_, *this);
+    drain_manager_ = component_factory.createDrainManager(*this);
+
+    initialize(options, local_address, component_factory);
   } catch (const EnvoyException& e) {
-    log().critical("error initializing configuration '{}': {}", options.configPath(), e.what());
+    ENVOY_LOG(critical, "error initializing configuration '{}': {}", options.configPath(),
+              e.what());
+    thread_local_.shutdownGlobalThreading();
     thread_local_.shutdownThread();
     exit(1);
   }
 }
 
-InstanceImpl::~InstanceImpl() { restarter_.shutdown(); }
+InstanceImpl::~InstanceImpl() {
+  restarter_.shutdown();
+
+  // Stop logging to file before all the AccessLogManager and its dependencies are
+  // destructed to avoid crashing at shutdown.
+  Logger::Registry::getSink()->logToStdErr();
+}
 
 Upstream::ClusterManager& InstanceImpl::clusterManager() { return config_->clusterManager(); }
 
 Tracing::HttpTracer& InstanceImpl::httpTracer() { return config_->httpTracer(); }
 
 void InstanceImpl::drainListeners() {
-  log().warn("closing and draining listeners");
-  for (const auto& worker : workers_) {
-    Worker& worker_ref = *worker;
-    worker->dispatcher().post([&worker_ref]() -> void { worker_ref.handler()->closeListeners(); });
-  }
-
-  drain_manager_->startDrainSequence();
+  ENVOY_LOG(warn, "closing and draining listeners");
+  listener_manager_->stopListeners();
+  drain_manager_->startDrainSequence(nullptr);
 }
 
 void InstanceImpl::failHealthcheck(bool fail) {
@@ -114,8 +105,36 @@ void InstanceImpl::failHealthcheck(bool fail) {
   server_stats_.live_.set(!fail);
 }
 
+void InstanceUtil::flushCountersAndGaugesToSinks(const std::list<Stats::SinkPtr>& sinks,
+                                                 Stats::Store& store) {
+  for (const auto& sink : sinks) {
+    sink->beginFlush();
+  }
+
+  for (const Stats::CounterSharedPtr& counter : store.counters()) {
+    uint64_t delta = counter->latch();
+    if (counter->used()) {
+      for (const auto& sink : sinks) {
+        sink->flushCounter(counter->name(), delta);
+      }
+    }
+  }
+
+  for (const Stats::GaugeSharedPtr& gauge : store.gauges()) {
+    if (gauge->used()) {
+      for (const auto& sink : sinks) {
+        sink->flushGauge(gauge->name(), gauge->value());
+      }
+    }
+  }
+
+  for (const auto& sink : sinks) {
+    sink->endFlush();
+  }
+}
+
 void InstanceImpl::flushStats() {
-  log_debug("flushing stats");
+  ENVOY_LOG(debug, "flushing stats");
   HotRestart::GetParentStatsInfo info;
   restarter_.getParentStats(info);
   server_stats_.uptime_.set(time(nullptr) - original_start_time_);
@@ -127,43 +146,8 @@ void InstanceImpl::flushStats() {
   server_stats_.days_until_first_cert_expiring_.set(
       sslContextManager().daysUntilFirstCertExpires());
 
-  for (Stats::CounterSharedPtr counter : stats_store_.counters()) {
-    uint64_t delta = counter->latch();
-    if (counter->used()) {
-      for (const auto& sink : stat_sinks_) {
-        sink->flushCounter(counter->name(), delta);
-      }
-    }
-  }
-
-  for (Stats::GaugeSharedPtr gauge : stats_store_.gauges()) {
-    if (gauge->used()) {
-      for (const auto& sink : stat_sinks_) {
-        sink->flushGauge(gauge->name(), gauge->value());
-      }
-    }
-  }
-
+  InstanceUtil::flushCountersAndGaugesToSinks(config_->statsSinks(), stats_store_);
   stat_flush_timer_->enableTimer(config_->statsFlushInterval());
-}
-
-int InstanceImpl::getListenSocketFd(const std::string& address) {
-  Network::Address::InstanceConstSharedPtr addr = Network::Utility::resolveUrl(address);
-  for (const auto& entry : socket_map_) {
-    if (entry.second->localAddress()->asString() == addr->asString()) {
-      return entry.second->fd();
-    }
-  }
-
-  return -1;
-}
-
-Network::ListenSocket* InstanceImpl::getListenSocketByIndex(uint32_t index) {
-  if (index < config_->listeners().size()) {
-    auto it = std::next(config_->listeners().begin(), index);
-    return socket_map_[it->get()].get();
-  }
-  return nullptr;
 }
 
 void InstanceImpl::getParentStats(HotRestart::GetParentStatsInfo& info) {
@@ -173,16 +157,32 @@ void InstanceImpl::getParentStats(HotRestart::GetParentStatsInfo& info) {
 
 bool InstanceImpl::healthCheckFailed() { return server_stats_.live_.value() == 0; }
 
-void InstanceImpl::initialize(Options& options, TestHooks& hooks,
+void InstanceImpl::initialize(Options& options,
+                              Network::Address::InstanceConstSharedPtr local_address,
                               ComponentFactory& component_factory) {
-  log().warn("initializing epoch {} (hot restart version={})", options.restartEpoch(),
-             restarter_.version());
+  ENVOY_LOG(warn, "initializing epoch {} (hot restart version={})", options.restartEpoch(),
+            restarter_.version());
 
   // Handle configuration that needs to take place prior to the main configuration load.
-  Json::ObjectPtr config_json = Json::Factory::loadFromFile(options.configPath());
-  config_json->validateSchema(Json::Schema::TOP_LEVEL_CONFIG_SCHEMA);
-  Configuration::InitialImpl initial_config(*config_json);
-  log().info("admin address: {}", initial_config.admin().address()->asString());
+  envoy::api::v2::Bootstrap bootstrap;
+  try {
+    MessageUtil::loadFromFile(options.configPath(), bootstrap);
+  } catch (const EnvoyException& e) {
+    // TODO(htuch): When v1 is deprecated, make this a warning encouraging config upgrade.
+    ENVOY_LOG(debug, "Unable to initialize config as v2, will retry as v1: {}", e.what());
+  }
+  if (!bootstrap.has_admin()) {
+    Json::ObjectSharedPtr config_json = Json::Factory::loadFromFile(options.configPath());
+    Config::BootstrapJson::translateBootstrap(*config_json, bootstrap);
+  }
+  bootstrap.mutable_node()->set_build_version(VersionInfo::version());
+
+  local_info_.reset(
+      new LocalInfo::LocalInfoImpl(bootstrap.node(), local_address, options.serviceZone(),
+                                   options.serviceClusterName(), options.serviceNodeName()));
+
+  Configuration::InitialImpl initial_config(bootstrap);
+  ENVOY_LOG(info, "admin address: {}", initial_config.admin().address()->asString());
 
   HotRestart::ShutdownParentAdminInfo info;
   info.original_start_time_ = original_start_time_;
@@ -193,22 +193,21 @@ void InstanceImpl::initialize(Options& options, TestHooks& hooks,
                              initial_config.admin().address(), *this));
 
   admin_scope_ = stats_store_.createScope("listener.admin.");
-  handler_.addListener(*admin_, admin_->mutable_socket(), *admin_scope_,
-                       Network::ListenerOptions::listenerOptionsWithBindToPort());
+  handler_->addListener(*admin_, admin_->mutable_socket(), *admin_scope_, 0,
+                        Network::ListenerOptions::listenerOptionsWithBindToPort());
 
   loadServerFlags(initial_config.flagsPath());
 
   // Workers get created first so they register for thread local updates.
-  for (uint32_t i = 0; i < std::max(1U, options.concurrency()); i++) {
-    workers_.emplace_back(new Worker(thread_local_, options.fileFlushIntervalMsec()));
-  }
+  listener_manager_.reset(
+      new ListenerManagerImpl(*this, listener_component_factory_, worker_factory_));
 
   // The main thread is also registered for thread local updates so that code that does not care
   // whether it runs on the main thread or on workers can still use TLS.
-  thread_local_.registerThread(handler_.dispatcher(), true);
+  thread_local_.registerThread(*dispatcher_, true);
 
   // We can now initialize stats for threading.
-  stats_store_.initializeThreading(handler_.dispatcher(), thread_local_);
+  stats_store_.initializeThreading(*dispatcher_, thread_local_);
 
   // Runtime gets initialized before the main configuration since during main configuration
   // load things may grab a reference to the loader for later use.
@@ -217,99 +216,49 @@ void InstanceImpl::initialize(Options& options, TestHooks& hooks,
   // Once we have runtime we can initialize the SSL context manager.
   ssl_context_manager_.reset(new Ssl::ContextManagerImpl(*runtime_loader_));
 
+  cluster_manager_factory_.reset(new Upstream::ProdClusterManagerFactory(
+      runtime(), stats(), threadLocal(), random(), dnsResolver(), sslContextManager(), dispatcher(),
+      localInfo()));
+
   // Now the configuration gets parsed. The configuration may start setting thread local data
   // per above. See MainImpl::initialize() for why we do this pointer dance.
-  Configuration::MainImpl* main_config = new Configuration::MainImpl(*this);
+  Configuration::MainImpl* main_config = new Configuration::MainImpl();
   config_.reset(main_config);
-  main_config->initialize(*config_json);
+  main_config->initialize(bootstrap, *this, *cluster_manager_factory_);
 
-  for (const Configuration::ListenerPtr& listener : config_->listeners()) {
-    // For each listener config we share a single TcpListenSocket among all threaded listeners.
-    // UdsListenerSockets are not managed and do not participate in hot restart as they are only
-    // used for testing.
-
-    // First we try to get the socket from our parent if applicable.
-
-    ASSERT(listener->address()->type() == Network::Address::Type::Ip);
-    std::string addr = fmt::format("tcp://{}", listener->address()->asString());
-    int fd = restarter_.duplicateParentListenSocket(addr);
-    if (fd != -1) {
-      log().info("obtained socket for address {} from parent", addr);
-      socket_map_[listener.get()].reset(new Network::TcpListenSocket(fd, listener->address()));
-    } else {
-      socket_map_[listener.get()].reset(
-          new Network::TcpListenSocket(listener->address(), listener->bindToPort()));
-    }
+  for (Stats::SinkPtr& sink : main_config->statsSinks()) {
+    stats_store_.addSink(*sink);
   }
-
-  // Setup signals.
-  sigterm_ = handler_.dispatcher().listenForSignal(SIGTERM, [this]() -> void {
-    log().warn("caught SIGTERM");
-    restarter_.terminateParent();
-    handler_.dispatcher().exit();
-  });
-
-  sig_usr_1_ = handler_.dispatcher().listenForSignal(SIGUSR1, [this]() -> void {
-    log().warn("caught SIGUSR1");
-    access_log_manager_.reopen();
-  });
-
-  sig_hup_ = handler_.dispatcher().listenForSignal(SIGHUP, []() -> void {
-    log().warn("caught and eating SIGHUP. See documentation for how to hot restart.");
-  });
-
-  initializeStatSinks();
 
   // Some of the stat sinks may need dispatcher support so don't flush until the main loop starts.
   // Just setup the timer.
-  stat_flush_timer_ = handler_.dispatcher().createTimer([this]() -> void { flushStats(); });
+  stat_flush_timer_ = dispatcher_->createTimer([this]() -> void { flushStats(); });
   stat_flush_timer_->enableTimer(config_->statsFlushInterval());
 
   // GuardDog (deadlock detection) object and thread setup before workers are
   // started and before our own run() loop runs.
   guard_dog_.reset(
-      new Server::GuardDogImpl(*admin_scope_, *config_, ProdMonotonicTimeSource::instance_));
-
-  // Register for cluster manager init notification. We don't start serving worker traffic until
-  // upstream clusters are initialized which may involve running the event loop. Note however that
-  // this can fire immediately if all clusters have already initialized.
-  clusterManager().setInitializedCb([this, &hooks]() -> void {
-    log().warn("all clusters initialized. initializing init manager");
-    init_manager_.initialize([this, &hooks]() -> void { startWorkers(hooks); });
-  });
+      new Server::GuardDogImpl(stats_store_, *config_, ProdMonotonicTimeSource::instance_));
 }
 
-void InstanceImpl::startWorkers(TestHooks& hooks) {
-  log().warn("all dependencies initialized. starting workers");
-  for (const WorkerPtr& worker : workers_) {
-    try {
-      worker->initializeConfiguration(*config_, socket_map_, *guard_dog_);
-    } catch (const Network::CreateListenerException& e) {
-      // It is possible that we fail to start listening on a port, even though we were able to
-      // bind to it above. This happens when there is a race between two applications to listen
-      // on the same port. In general if we can't initialize the worker configuration just print
-      // the error and exit cleanly without crashing.
-      log().critical("shutting down due to error initializing worker configuration: {}", e.what());
-      shutdown();
-    }
-  }
+void InstanceImpl::startWorkers() {
+  listener_manager_->startWorkers(*guard_dog_);
 
   // At this point we are ready to take traffic and all listening ports are up. Notify our parent
   // if applicable that they can stop listening and drain.
   restarter_.drainParentListeners();
   drain_manager_->startParentShutdownSequence();
-  hooks.onServerInitialized();
 }
 
 Runtime::LoaderPtr InstanceUtil::createRuntime(Instance& server,
                                                Server::Configuration::Initial& config) {
   if (config.runtime()) {
-    log().info("runtime symlink: {}", config.runtime()->symlinkRoot());
-    log().info("runtime subdirectory: {}", config.runtime()->subdirectory());
+    ENVOY_LOG(info, "runtime symlink: {}", config.runtime()->symlinkRoot());
+    ENVOY_LOG(info, "runtime subdirectory: {}", config.runtime()->subdirectory());
 
     std::string override_subdirectory =
         config.runtime()->overrideSubdirectory() + "/" + server.localInfo().clusterName();
-    log().info("runtime override subdirectory: {}", override_subdirectory);
+    ENVOY_LOG(info, "runtime override subdirectory: {}", override_subdirectory);
 
     return Runtime::LoaderPtr{new Runtime::LoaderImpl(
         server.dispatcher(), server.threadLocal(), config.runtime()->symlinkRoot(),
@@ -319,62 +268,83 @@ Runtime::LoaderPtr InstanceUtil::createRuntime(Instance& server,
   }
 }
 
-void InstanceImpl::initializeStatSinks() {
-  if (config_->statsdUdpPort().valid()) {
-    log().info("statsd UDP port: {}", config_->statsdUdpPort().value());
-    stat_sinks_.emplace_back(new Stats::Statsd::UdpStatsdSink(config_->statsdUdpPort().value()));
-    stats_store_.addSink(*stat_sinks_.back());
-  }
-
-  if (config_->statsdTcpClusterName().valid()) {
-    log().info("statsd TCP cluster: {}", config_->statsdTcpClusterName().value());
-    stat_sinks_.emplace_back(
-        new Stats::Statsd::TcpStatsdSink(local_info_, config_->statsdTcpClusterName().value(),
-                                         thread_local_, config_->clusterManager()));
-    stats_store_.addSink(*stat_sinks_.back());
-  }
-}
-
 void InstanceImpl::loadServerFlags(const Optional<std::string>& flags_path) {
   if (!flags_path.valid()) {
     return;
   }
 
-  log().info("server flags path: {}", flags_path.value());
-  if (handler_.api().fileExists(flags_path.value() + "/drain")) {
-    log().warn("starting server in drain mode");
+  ENVOY_LOG(info, "server flags path: {}", flags_path.value());
+  if (api_->fileExists(flags_path.value() + "/drain")) {
+    ENVOY_LOG(warn, "starting server in drain mode");
     failHealthcheck(true);
   }
 }
 
-uint64_t InstanceImpl::numConnections() {
-  uint64_t num_connections = 0;
-  for (const auto& worker : workers_) {
-    if (worker->handler()) {
-      num_connections += worker->handler()->numConnections();
-    }
-  }
+uint64_t InstanceImpl::numConnections() { return listener_manager_->numConnections(); }
 
-  return num_connections;
+RunHelper::RunHelper(Event::Dispatcher& dispatcher, Upstream::ClusterManager& cm,
+                     HotRestart& hot_restart, AccessLog::AccessLogManager& access_log_manager,
+                     InitManagerImpl& init_manager, std::function<void()> workers_start_cb) {
+
+  // Setup signals.
+  sigterm_ = dispatcher.listenForSignal(SIGTERM, [this, &hot_restart, &dispatcher]() {
+    ENVOY_LOG(warn, "caught SIGTERM");
+    shutdown_ = true;
+    hot_restart.terminateParent();
+    dispatcher.exit();
+  });
+
+  sig_usr_1_ = dispatcher.listenForSignal(SIGUSR1, [&access_log_manager]() {
+    ENVOY_LOG(warn, "caught SIGUSR1");
+    access_log_manager.reopen();
+  });
+
+  sig_hup_ = dispatcher.listenForSignal(SIGHUP, []() {
+    ENVOY_LOG(warn, "caught and eating SIGHUP. See documentation for how to hot restart.");
+  });
+
+  // Register for cluster manager init notification. We don't start serving worker traffic until
+  // upstream clusters are initialized which may involve running the event loop. Note however that
+  // this can fire immediately if all clusters have already initialized. Also note that we need
+  // to guard against shutdown at two different levels since SIGTERM can come in once the run loop
+  // starts.
+  cm.setInitializedCb([this, &init_manager, workers_start_cb]() {
+    if (shutdown_) {
+      return;
+    }
+
+    ENVOY_LOG(warn, "all clusters initialized. initializing init manager");
+    init_manager.initialize([this, workers_start_cb]() {
+      if (shutdown_) {
+        return;
+      }
+
+      workers_start_cb();
+    });
+  });
 }
 
 void InstanceImpl::run() {
+  RunHelper helper(*dispatcher_, clusterManager(), restarter_, access_log_manager_, init_manager_,
+                   [this]() -> void { startWorkers(); });
+
   // Run the main dispatch loop waiting to exit.
-  log().warn("starting main dispatch loop");
+  ENVOY_LOG(warn, "starting main dispatch loop");
   auto watchdog = guard_dog_->createWatchDog(Thread::Thread::currentThreadId());
-  watchdog->startWatchdog(handler_.dispatcher());
-  handler_.dispatcher().run(Event::Dispatcher::RunType::Block);
-  log().warn("main dispatch loop exited");
+  watchdog->startWatchdog(*dispatcher_);
+  dispatcher_->run(Event::Dispatcher::RunType::Block);
+  ENVOY_LOG(warn, "main dispatch loop exited");
   guard_dog_->stopWatching(watchdog);
   watchdog.reset();
+
+  // Before starting to shutdown anything else, stop slot destruction updates.
+  thread_local_.shutdownGlobalThreading();
 
   // Before the workers start exiting we should disable stat threading.
   stats_store_.shutdownThreading();
 
-  // Shutdown all the listeners now that the main dispatch loop is done.
-  for (const WorkerPtr& worker : workers_) {
-    worker->exit();
-  }
+  // Shutdown all the workers now that the main dispatch loop is done.
+  listener_manager_->stopWorkers();
 
   // Only flush if we have not been hot restarted.
   if (stat_flush_timer_) {
@@ -382,27 +352,28 @@ void InstanceImpl::run() {
   }
 
   config_->clusterManager().shutdown();
-  handler_.closeConnections();
+  handler_.reset();
   thread_local_.shutdownThread();
-  log().warn("exiting");
-  log().flush();
+  ENVOY_LOG(warn, "exiting");
+  ENVOY_FLUSH_LOG();
 }
 
 Runtime::Loader& InstanceImpl::runtime() { return *runtime_loader_; }
 
 void InstanceImpl::shutdown() {
-  log().warn("shutdown invoked. sending SIGTERM to self");
+  ENVOY_LOG(warn, "shutdown invoked. sending SIGTERM to self");
   kill(getpid(), SIGTERM);
 }
 
 void InstanceImpl::shutdownAdmin() {
-  log().warn("shutting down admin due to child startup");
+  ENVOY_LOG(warn, "shutting down admin due to child startup");
   stat_flush_timer_.reset();
-  handler_.closeListeners();
+  handler_->stopListeners();
   admin_->mutable_socket().close();
 
-  log().warn("terminating parent process");
+  ENVOY_LOG(warn, "terminating parent process");
   restarter_.terminateParent();
 }
 
-} // Server
+} // namespace Server
+} // namespace Envoy

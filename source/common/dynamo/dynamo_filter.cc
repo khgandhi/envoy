@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "common/buffer/buffer_impl.h"
+#include "common/common/assert.h"
 #include "common/dynamo/dynamo_request_parser.h"
 #include "common/dynamo/dynamo_utility.h"
 #include "common/http/codes.h"
@@ -13,8 +14,9 @@
 #include "common/http/utility.h"
 #include "common/json/json_loader.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 namespace Dynamo {
 
 Http::FilterHeadersStatus DynamoFilter::decodeHeaders(Http::HeaderMap& headers, bool) {
@@ -34,6 +36,7 @@ Http::FilterDataStatus DynamoFilter::decodeData(Buffer::Instance& data, bool end
   if (end_stream) {
     return Http::FilterDataStatus::Continue;
   } else {
+    // Buffer until the complete request has been processed.
     return Http::FilterDataStatus::StopIterationAndBuffer;
   }
 }
@@ -48,30 +51,27 @@ Http::FilterTrailersStatus DynamoFilter::decodeTrailers(Http::HeaderMap&) {
 }
 
 void DynamoFilter::onDecodeComplete(const Buffer::Instance& data) {
-  std::string body = buildBody(decoder_callbacks_->decodingBuffer().get(), data);
+  std::string body = buildBody(decoder_callbacks_->decodingBuffer(), data);
   if (!body.empty()) {
     try {
-      Json::ObjectPtr json_body = Json::Factory::loadFromString(body);
+      Json::ObjectSharedPtr json_body = Json::Factory::loadFromString(body);
       table_descriptor_ = RequestParser::parseTable(operation_, *json_body);
     } catch (const Json::Exception& jsonEx) {
       // Body parsing failed. This should not happen, just put a stat for that.
-      stats_.counter(fmt::format("{}invalid_req_body", stat_prefix_)).inc();
+      scope_.counter(fmt::format("{}invalid_req_body", stat_prefix_)).inc();
     }
   }
 }
 
 void DynamoFilter::onEncodeComplete(const Buffer::Instance& data) {
-  if (!response_headers_) {
-    return;
-  }
-
+  ASSERT(enabled_);
   uint64_t status = Http::Utility::getResponseStatus(*response_headers_);
   chargeBasicStats(status);
 
-  std::string body = buildBody(encoder_callbacks_->encodingBuffer().get(), data);
+  std::string body = buildBody(encoder_callbacks_->encodingBuffer(), data);
   if (!body.empty()) {
     try {
-      Json::ObjectPtr json_body = Json::Factory::loadFromString(body);
+      Json::ObjectSharedPtr json_body = Json::Factory::loadFromString(body);
       chargeTablePartitionIdStats(*json_body);
 
       if (Http::CodeUtility::is4xx(status)) {
@@ -85,7 +85,7 @@ void DynamoFilter::onEncodeComplete(const Buffer::Instance& data) {
       }
     } catch (const Json::Exception&) {
       // Body parsing failed. This should not happen, just put a stat for that.
-      stats_.counter(fmt::format("{}invalid_resp_body", stat_prefix_)).inc();
+      scope_.counter(fmt::format("{}invalid_resp_body", stat_prefix_)).inc();
     }
   }
 }
@@ -111,6 +111,7 @@ Http::FilterDataStatus DynamoFilter::encodeData(Buffer::Instance& data, bool end
   if (end_stream) {
     return Http::FilterDataStatus::Continue;
   } else {
+    // Buffer until the complete response has been processed.
     return Http::FilterDataStatus::StopIterationAndBuffer;
   }
 }
@@ -150,15 +151,15 @@ void DynamoFilter::chargeBasicStats(uint64_t status) {
   if (!operation_.empty()) {
     chargeStatsPerEntity(operation_, "operation", status);
   } else {
-    stats_.counter(fmt::format("{}operation_missing", stat_prefix_)).inc();
+    scope_.counter(fmt::format("{}operation_missing", stat_prefix_)).inc();
   }
 
   if (!table_descriptor_.table_name.empty()) {
     chargeStatsPerEntity(table_descriptor_.table_name, "table", status);
   } else if (table_descriptor_.is_single_table) {
-    stats_.counter(fmt::format("{}table_missing", stat_prefix_)).inc();
+    scope_.counter(fmt::format("{}table_missing", stat_prefix_)).inc();
   } else {
-    stats_.counter(fmt::format("{}multiple_tables", stat_prefix_)).inc();
+    scope_.counter(fmt::format("{}multiple_tables", stat_prefix_)).inc();
   }
 }
 
@@ -170,18 +171,22 @@ void DynamoFilter::chargeStatsPerEntity(const std::string& entity, const std::st
   std::string group_string =
       Http::CodeUtility::groupStringForResponseCode(static_cast<Http::Code>(status));
 
-  stats_.counter(fmt::format("{}{}.{}.upstream_rq_total", stat_prefix_, entity_type, entity)).inc();
-  stats_.counter(fmt::format("{}{}.{}.upstream_rq_total_{}", stat_prefix_, entity_type, entity,
-                             group_string)).inc();
-  stats_.counter(fmt::format("{}{}.{}.upstream_rq_total_{}", stat_prefix_, entity_type, entity,
-                             std::to_string(status))).inc();
+  scope_.counter(fmt::format("{}{}.{}.upstream_rq_total", stat_prefix_, entity_type, entity)).inc();
+  scope_
+      .counter(fmt::format("{}{}.{}.upstream_rq_total_{}", stat_prefix_, entity_type, entity,
+                           group_string))
+      .inc();
+  scope_
+      .counter(fmt::format("{}{}.{}.upstream_rq_total_{}", stat_prefix_, entity_type, entity,
+                           std::to_string(status)))
+      .inc();
 
-  stats_.deliverTimingToSinks(
+  scope_.deliverTimingToSinks(
       fmt::format("{}{}.{}.upstream_rq_time", stat_prefix_, entity_type, entity), latency);
-  stats_.deliverTimingToSinks(
+  scope_.deliverTimingToSinks(
       fmt::format("{}{}.{}.upstream_rq_time_{}", stat_prefix_, entity_type, entity, group_string),
       latency);
-  stats_.deliverTimingToSinks(fmt::format("{}{}.{}.upstream_rq_time_{}", stat_prefix_, entity_type,
+  scope_.deliverTimingToSinks(fmt::format("{}{}.{}.upstream_rq_time_{}", stat_prefix_, entity_type,
                                           entity, std::to_string(status)),
                               latency);
 }
@@ -191,8 +196,10 @@ void DynamoFilter::chargeUnProcessedKeysStats(const Json::Object& json_body) {
   // complete apart of the batch operation. Only the table names will be logged for errors.
   std::vector<std::string> unprocessed_tables = RequestParser::parseBatchUnProcessedKeys(json_body);
   for (const std::string& unprocessed_table : unprocessed_tables) {
-    stats_.counter(fmt::format("{}error.{}.BatchFailureUnprocessedKeys", stat_prefix_,
-                               unprocessed_table)).inc();
+    scope_
+        .counter(
+            fmt::format("{}error.{}.BatchFailureUnprocessedKeys", stat_prefix_, unprocessed_table))
+        .inc();
   }
 }
 
@@ -201,13 +208,15 @@ void DynamoFilter::chargeFailureSpecificStats(const Json::Object& json_body) {
 
   if (!error_type.empty()) {
     if (table_descriptor_.table_name.empty()) {
-      stats_.counter(fmt::format("{}error.no_table.{}", stat_prefix_, error_type)).inc();
+      scope_.counter(fmt::format("{}error.no_table.{}", stat_prefix_, error_type)).inc();
     } else {
-      stats_.counter(fmt::format("{}error.{}.{}", stat_prefix_, table_descriptor_.table_name,
-                                 error_type)).inc();
+      scope_
+          .counter(
+              fmt::format("{}error.{}.{}", stat_prefix_, table_descriptor_.table_name, error_type))
+          .inc();
     }
   } else {
-    stats_.counter(fmt::format("{}empty_response_body", stat_prefix_)).inc();
+    scope_.counter(fmt::format("{}empty_response_body", stat_prefix_)).inc();
   }
 }
 
@@ -219,10 +228,11 @@ void DynamoFilter::chargeTablePartitionIdStats(const Json::Object& json_body) {
   std::vector<RequestParser::PartitionDescriptor> partitions =
       RequestParser::parsePartitions(json_body);
   for (const RequestParser::PartitionDescriptor& partition : partitions) {
-    std::string stats_string = Utility::buildPartitionStatString(
+    std::string scope_string = Utility::buildPartitionStatString(
         stat_prefix_, table_descriptor_.table_name, operation_, partition.partition_id_);
-    stats_.counter(stats_string).add(partition.capacity_);
+    scope_.counter(scope_string).add(partition.capacity_);
   }
 }
 
-} // Dynamo
+} // namespace Dynamo
+} // namespace Envoy

@@ -18,9 +18,12 @@ Cluster
     "circuit_breakers": "{...}",
     "ssl_context": "{...}",
     "features": "...",
-    "http_codec_options": "...",
+    "http2_settings": "{...}",
+    "cleanup_interval_ms": "...",
     "dns_refresh_rate_ms": "...",
-    "outlier_detection": "..."
+    "dns_lookup_family": "...",
+    "dns_resolvers": [],
+    "outlier_detection": "{...}"
   }
 
 .. _config_cluster_manager_cluster_name:
@@ -34,26 +37,33 @@ name
 
 type
   *(required, string)* The :ref:`service discovery type <arch_overview_service_discovery_types>` to
-  use for resolving the cluster. Possible options are *static*, *strict_dns*, *logical_dns*, and
-  *sds*.
+  use for resolving the cluster. Possible options are *static*, *strict_dns*, *logical_dns*,
+  :ref:`*original_dst* <arch_overview_service_discovery_types_original_destination>`, and *sds*.
 
 connect_timeout_ms
   *(required, integer)* The timeout for new network connections to hosts in the cluster specified
   in milliseconds.
 
+.. _config_cluster_manager_cluster_per_connection_buffer_limit_bytes:
+
 per_connection_buffer_limit_bytes
   *(optional, integer)* Soft limit on size of the cluster's connections read and write buffers.
   If unspecified, an implementation defined default is applied (1MiB).
 
+.. _config_cluster_manager_cluster_lb_type:
+
 lb_type
   *(required, string)* The :ref:`load balancer type <arch_overview_load_balancing_types>` to use
   when picking a host in the cluster. Possible options are *round_robin*, *least_request*,
-  *ring_hash*, and *random*.
+  *ring_hash*, *random*, and *original_dst_lb*.  Note that :ref:`*original_dst_lb*
+  <arch_overview_load_balancing_types_original_destination>` must be used with clusters of type
+  :ref:`*original_dst* <arch_overview_service_discovery_types_original_destination>`, and may not be
+  used with any other cluster type.
 
 hosts
   *(sometimes required, array)* If the service discovery type is *static*, *strict_dns*, or
-  *logical_dns* the hosts array is required. How it is specified depends on the type of service
-  discovery:
+  *logical_dns* the hosts array is required. Hosts array is not allowed with cluster type
+  *original_dst*. How it is specified depends on the type of service discovery:
 
   static
     Static clusters must use fully resolved hosts that require no DNS lookups. Both TCP and unix
@@ -125,14 +135,24 @@ features
     connections. Even if TLS is used with ALPN, *http2* must be specified. As an aside this allows
     HTTP/2 connections to happen over plain text.
 
-.. _config_cluster_manager_cluster_http_codec_options:
+.. _config_cluster_manager_cluster_http2_settings:
 
-http_codec_options
-  *(optional, string)* Additional options that are passed directly to the codec when initiating
-  HTTP connection pool connections. These are the same options supported in the HTTP connection
-  manager :ref:`http_codec_options <config_http_conn_man_http_codec_options>` option. When building
-  an HTTP/2 mesh, if it's desired to disable HTTP/2 header compression the *no_compression*
-  option should be specified both here as well as in the HTTP connection manager.
+http2_settings
+  *(optional, object)* Additional HTTP/2 settings that are passed directly to the HTTP/2 codec when
+  initiating HTTP connection pool connections. These are the same options supported in the HTTP connection
+  manager :ref:`http2_settings <config_http_conn_man_http2_settings>` option.
+
+.. _config_cluster_manager_cluster_cleanup_interval_ms:
+
+cleanup_interval_ms
+  *(optional, integer)* The interval for removing stale hosts from an *original_dst* cluster. Hosts
+  are considered stale if they have not been used as upstream destinations during this interval.
+  New hosts are added to original destination clusters on demand as new connections are redirected
+  to Envoy, causing the number of hosts in the cluster to grow over time. Hosts that are not stale
+  (they are actively used as destinations) are kept in the cluster, which allows connections to
+  them remain open, saving the latency that would otherwise be spent on opening new connections.
+  If this setting is not specified, the value defaults to 5000. For cluster types other than
+  *original_dst* this setting is ignored.
 
 .. _config_cluster_manager_cluster_dns_refresh_rate_ms:
 
@@ -142,75 +162,30 @@ dns_refresh_rate_ms
   the value defaults to 5000. For cluster types other than *strict_dns* and *logical_dns* this setting is
   ignored.
 
-.. _config_cluster_manager_cluster_outlier_detection:
+.. _config_cluster_manager_cluster_dns_lookup_family:
 
-outlier_detection
+dns_lookup_family
+  *(optional, string)* The DNS IP address resolution policy. The options are *v4_only*, *v6_only*,
+  and *auto*. If this setting is not specified, the value defaults to *v4_only*. When *v4_only* is selected,
+  the DNS resolver will only perform a lookup for addresses in the IPv4 family. If *v6_only* is selected,
+  the DNS resolver will only perform a lookup for addresses in the IPv6 family. If *auto* is specified,
+  the DNS resolver will first perform a lookup for addresses in the IPv6 family and fallback to a lookup for
+  addresses in the IPv4 family. For cluster types other than *strict_dns* and *logical_dns*, this setting
+  is ignored.
+
+.. _config_cluster_manager_cluster_dns_resolvers:
+
+dns_resolvers
+  *(optional, array)* If DNS resolvers are specified and the cluster type is either *strict_dns*, or
+  *logical_dns*, this value is used to specify the cluster's dns resolvers. If this setting is not
+  specified, the value defaults to the default resolver, which uses /etc/resolv.conf for
+  configuration. For cluster types other than *strict_dns* and *logical_dns* this setting is
+  ignored.
+
+:ref:`outlier_detection <config_cluster_manager_cluster_outlier_detection>`
   *(optional, object)* If specified, outlier detection will be enabled for this upstream cluster.
   See the :ref:`architecture overview <arch_overview_outlier_detection>` for more information on outlier
-  detection. The following configuration values are supported:
-
-  .. _config_cluster_manager_cluster_outlier_detection_consecutive_5xx:
-
-  consecutive_5xx
-    The number of consecutive 5xx responses before a consecutive 5xx ejection occurs. Defaults to 5.
-
-  .. _config_cluster_manager_cluster_outlier_detection_interval_ms:
-
-  interval_ms
-    The time interval between ejection analysis sweeps. This can result in both new ejections as well
-    as hosts being returned to service. Defaults to 10000ms or 10s.
-
-  .. _config_cluster_manager_cluster_outlier_detection_base_ejection_time_ms:
-
-  base_ejection_time_ms
-    The base time that a host is ejected for. The real time is equal to the base time multiplied by
-    the number of times the host has been ejected. Defaults to 30000ms or 30s.
-
-  .. _config_cluster_manager_cluster_outlier_detection_max_ejection_percent:
-
-  max_ejection_percent
-    The maximum % of an upstream cluster that can be ejected due to outlier detection. Defaults to 10%.
-
-  .. _config_cluster_manager_cluster_outlier_detection_enforcing_consecutive_5xx:
-
-  enforcing_consecutive_5xx
-    The % chance that a host will be actually ejected when an outlier status is detected through
-    consecutive 5xx. This setting can be used to disable ejection or to ramp it up slowly. Defaults to 100.
-
-  .. _config_cluster_manager_cluster_outlier_detection_enforcing_success_rate:
-
-  enforcing_success_rate
-    The % chance that a host will be actually ejected when an outlier status is detected through
-    success rate statistics. This setting can be used to disable ejection or to ramp it up slowly.
-    Defaults to 100.
-
-  .. _config_cluster_manager_cluster_outlier_detection_success_rate_minimum_hosts:
-
-  success_rate_minimum_hosts
-    The number of hosts in a cluster that must have enough request volume to detect success rate outliers.
-    If the number of hosts is less than this setting, outlier detection via success rate statistics is not
-    performed for any host in the cluster. Defaults to 5.
-
-  .. _config_cluster_manager_cluster_outlier_detection_success_rate_request_volume:
-
-  success_rate_request_volume
-    The minimum number of total requests that must be collected in one interval
-    (as defined by :ref:`interval_ms <config_cluster_manager_cluster_outlier_detection_interval_ms>` above)
-    to include this host in success rate based outlier detection. If the volume is lower than this setting,
-    outlier detection via success rate statistics is not performed for that host. Defaults to 100.
-
-  .. _config_cluster_manager_cluster_outlier_detection_success_rate_stdev_factor:
-
-  success_rate_stdev_factor
-    This factor is used to determine the ejection threshold for success rate outlier ejection.
-    The ejection threshold is the difference between the mean success rate, and the product of
-    this factor and the standard deviation of the mean success rate:
-    ``mean - (stdev * success_rate_stdev_factor)``. This factor is divided by a thousand to
-    get a ``double``. That is, if the desired factor is ``1.9``, the runtime value should be ``1900``.
-    Defaults to 1900.
-
-  Each of the above configuration values can be overridden via
-  :ref:`runtime values <config_cluster_manager_cluster_runtime_outlier_detection>`.
+  detection.
 
 .. toctree::
   :hidden:
@@ -220,3 +195,4 @@ outlier_detection
   cluster_ssl
   cluster_stats
   cluster_runtime
+  cluster_outlier_detection

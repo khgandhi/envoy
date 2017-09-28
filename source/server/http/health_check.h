@@ -7,21 +7,21 @@
 
 #include "envoy/http/codes.h"
 #include "envoy/http/filter.h"
+#include "envoy/server/filter_config.h"
 
-#include "server/config/network/http_connection_manager.h"
-
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
-class HealthCheckFilterConfig : public HttpFilterConfigFactory {
+class HealthCheckFilterConfig : public NamedHttpFilterConfigFactory {
 public:
-  HttpFilterFactoryCb tryCreateFilterFactory(HttpFilterType type, const std::string& name,
-                                             const Json::Object& config, const std::string&,
-                                             Server::Instance& server) override;
+  HttpFilterFactoryCb createFilterFactory(const Json::Object& config, const std::string&,
+                                          FactoryContext& context) override;
+  std::string name() override { return "envoy.health_check"; }
 };
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
 
 /**
  * Shared cache manager used by all instances of a health check filter configuration as well as
@@ -57,10 +57,13 @@ typedef std::shared_ptr<HealthCheckCacheManager> HealthCheckCacheManagerSharedPt
  */
 class HealthCheckFilter : public Http::StreamFilter {
 public:
-  HealthCheckFilter(Server::Instance& server, bool pass_through_mode,
+  HealthCheckFilter(Server::Configuration::FactoryContext& context, bool pass_through_mode,
                     HealthCheckCacheManagerSharedPtr cache_manager, const std::string& endpoint)
-      : server_(server), pass_through_mode_(pass_through_mode), cache_manager_(cache_manager),
+      : context_(context), pass_through_mode_(pass_through_mode), cache_manager_(cache_manager),
         endpoint_(endpoint) {}
+
+  // Http::StreamFilterBase
+  void onDestroy() override {}
 
   // Http::StreamDecoderFilter
   Http::FilterHeadersStatus decodeHeaders(Http::HeaderMap& headers, bool end_stream) override;
@@ -83,7 +86,7 @@ public:
 private:
   void onComplete();
 
-  Server::Instance& server_;
+  Server::Configuration::FactoryContext& context_;
   Http::StreamDecoderFilterCallbacks* callbacks_{};
   bool handling_{};
   bool health_check_request_{};
@@ -91,3 +94,4 @@ private:
   HealthCheckCacheManagerSharedPtr cache_manager_{};
   const std::string endpoint_;
 };
+} // namespace Envoy

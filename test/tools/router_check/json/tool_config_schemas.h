@@ -2,6 +2,7 @@
 
 #include <string>
 
+namespace Envoy {
 namespace Json {
 
 class ToolSchema {
@@ -13,4 +14,5 @@ public:
   static const std::string& routerCheckSchema();
 };
 
-} // Json
+} // namespace Json
+} // namespace Envoy

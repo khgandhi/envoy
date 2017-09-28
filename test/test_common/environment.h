@@ -10,9 +10,12 @@
 
 #include "common/json/json_loader.h"
 
+namespace Envoy {
 class TestEnvironment {
 public:
   typedef std::unordered_map<std::string, uint32_t> PortMap;
+
+  typedef std::unordered_map<std::string, std::string> ParamMap;
 
   /**
    * Initialize command-line options for later access by tests in getOptions().
@@ -27,7 +30,7 @@ public:
    * @param Network::Address::IpVersion IP address version to check.
    * @return bool if testing only with IP type addresses only.
    */
-  static bool shouldRunTestForIpVersion(const Network::Address::IpVersion& type);
+  static bool shouldRunTestForIpVersion(Network::Address::IpVersion type);
 
   /**
    * Return a vector of IP address parameters to test. Tests can be run with
@@ -97,30 +100,63 @@ public:
   }
 
   /**
-   * String environment path substitution.
+   * String environment path, loopback, and DNS resolver type substitution.
    * @param str string with template patterns including {{ test_tmpdir }}.
+   * @param version supplies the IP version to substitute for relevant templates.
    * @return std::string with patterns replaced with environment values.
    */
-  static std::string substitute(const std::string str);
+  static std::string
+  substitute(const std::string& str,
+             Network::Address::IpVersion version = Network::Address::IpVersion::v4);
 
   /**
-   * Substitue ports and paths in a JSON file in the private writable test temporary directory.
+   * Substitute ports, paths, and IP loopback addressses in a JSON file in the
+   * private writable test temporary directory.
    * @param path path prefix for the input file with port and path templates.
    * @param port_map map from port name to port number.
+   * @param version IP address version to substitute.
    * @return std::string path for the generated file.
    */
-  static std::string temporaryFileSubstitute(const std::string& path, const PortMap& port_map);
+  static std::string temporaryFileSubstitute(const std::string& path, const PortMap& port_map,
+                                             Network::Address::IpVersion version);
+  /**
+   * Substitute ports, paths, and IP loopback addressses in a JSON file in the
+   * private writable test temporary directory.
+   * @param path path prefix for the input file with port and path templates.
+   * @param param_map map from parameter name to values.
+   * @param port_map map from port name to port number.
+   * @param version IP address version to substitute.
+   * @return std::string path for the generated file.
+   */
+  static std::string temporaryFileSubstitute(const std::string& path, const ParamMap& param_map,
+                                             const PortMap& port_map,
+                                             Network::Address::IpVersion version);
 
   /**
-   * Build JSON object from a string subject to environment path substitution.
+   * Build JSON object from a string subject to environment path, loopback, and DNS resolver type
+   * substitution.
    * @param json JSON with template patterns including {{ test_certs }}.
-   * @return Json::ObjectPtr with built JSON object.
+   * @param version supplies the IP version to substitute for relevant templates.
+   * @return Json::ObjectSharedPtr with built JSON object.
    */
-  static Json::ObjectPtr jsonLoadFromString(const std::string& json);
+  static Json::ObjectSharedPtr
+  jsonLoadFromString(const std::string& json,
+                     Network::Address::IpVersion version = Network::Address::IpVersion::v4);
 
   /**
    * Execute a program under ::system. Any failure is fatal.
    * @param args program path and arguments.
    */
   static void exec(const std::vector<std::string>& args);
+
+  /**
+   * Dumps the contents of the string into a tempoary file from temporaryDirectory() + filename.
+   *
+   * @param filename: the name of the file to use
+   * @param contents: the data to go in the file.
+   * @return the fully qualified path of the output file.
+   */
+  static std::string writeStringToFileForTest(const std::string& filename,
+                                              const std::string& contents);
 };
+} // namespace Envoy

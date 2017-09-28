@@ -12,13 +12,14 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Invoke;
 using testing::Return;
 using testing::ReturnPointee;
 using testing::ReturnRef;
 using testing::SaveArg;
+using testing::_;
 
+namespace Envoy {
 namespace Network {
 
 MockConnectionCallbacks::MockConnectionCallbacks() {}
@@ -26,9 +27,9 @@ MockConnectionCallbacks::~MockConnectionCallbacks() {}
 
 uint64_t MockConnectionBase::next_id_;
 
-void MockConnectionBase::raiseEvents(uint32_t events) {
-  if ((events & Network::ConnectionEvent::RemoteClose) ||
-      (events & Network::ConnectionEvent::LocalClose)) {
+void MockConnectionBase::raiseEvent(Network::ConnectionEvent event) {
+  if (event == Network::ConnectionEvent::RemoteClose ||
+      event == Network::ConnectionEvent::LocalClose) {
     if (state_ == Connection::State::Closed) {
       return;
     }
@@ -37,7 +38,19 @@ void MockConnectionBase::raiseEvents(uint32_t events) {
   }
 
   for (Network::ConnectionCallbacks* callbacks : callbacks_) {
-    callbacks->onEvent(events);
+    callbacks->onEvent(event);
+  }
+}
+
+void MockConnectionBase::runHighWatermarkCallbacks() {
+  for (auto* callback : callbacks_) {
+    callback->onAboveWriteBufferHighWatermark();
+  }
+}
+
+void MockConnectionBase::runLowWatermarkCallbacks() {
+  for (auto* callback : callbacks_) {
+    callback->onBelowWriteBufferLowWatermark();
   }
 }
 
@@ -45,20 +58,20 @@ template <class T> static void initializeMockConnection(T& connection) {
   ON_CALL(connection, dispatcher()).WillByDefault(ReturnRef(connection.dispatcher_));
   ON_CALL(connection, readEnabled()).WillByDefault(ReturnPointee(&connection.read_enabled_));
   ON_CALL(connection, addConnectionCallbacks(_))
-      .WillByDefault(Invoke([&connection](Network::ConnectionCallbacks& callbacks)
-                                -> void { connection.callbacks_.push_back(&callbacks); }));
-  ON_CALL(connection, close(_))
-      .WillByDefault(Invoke([&connection](ConnectionCloseType) -> void {
-        connection.raiseEvents(Network::ConnectionEvent::LocalClose);
+      .WillByDefault(Invoke([&connection](Network::ConnectionCallbacks& callbacks) -> void {
+        connection.callbacks_.push_back(&callbacks);
       }));
+  ON_CALL(connection, close(_)).WillByDefault(Invoke([&connection](ConnectionCloseType) -> void {
+    connection.raiseEvent(Network::ConnectionEvent::LocalClose);
+  }));
   ON_CALL(connection, remoteAddress()).WillByDefault(ReturnPointee(connection.remote_address_));
   ON_CALL(connection, id()).WillByDefault(Return(connection.next_id_));
   ON_CALL(connection, state()).WillByDefault(ReturnPointee(&connection.state_));
 
   // The real implementation will move the buffer data into the socket.
-  ON_CALL(connection, write(_))
-      .WillByDefault(
-          Invoke([](Buffer::Instance& buffer) -> void { buffer.drain(buffer.length()); }));
+  ON_CALL(connection, write(_)).WillByDefault(Invoke([](Buffer::Instance& buffer) -> void {
+    buffer.drain(buffer.length());
+  }));
 }
 
 MockConnection::MockConnection() { initializeMockConnection(*this); }
@@ -75,7 +88,7 @@ MockActiveDnsQuery::MockActiveDnsQuery() {}
 MockActiveDnsQuery::~MockActiveDnsQuery() {}
 
 MockDnsResolver::MockDnsResolver() {
-  ON_CALL(*this, resolve(_, _)).WillByDefault(Return(&active_query_));
+  ON_CALL(*this, resolve(_, _, _)).WillByDefault(Return(&active_query_));
 }
 
 MockDnsResolver::~MockDnsResolver() {}
@@ -124,9 +137,10 @@ MockListenSocket::MockListenSocket() : local_address_(new Address::Ipv4Instance(
 MockListenSocket::~MockListenSocket() {}
 
 MockListener::MockListener() {}
-MockListener::~MockListener() {}
+MockListener::~MockListener() { onDestroy(); }
 
 MockConnectionHandler::MockConnectionHandler() {}
 MockConnectionHandler::~MockConnectionHandler() {}
 
-} // Network
+} // namespace Network
+} // namespace Envoy

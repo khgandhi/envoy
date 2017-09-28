@@ -14,13 +14,13 @@ envoy_cc_test_library(
         "main.cc",
         "test_runner.h",
     ],
-    external_deps = [
-        "protobuf",
-    ],
     deps = [
         "//source/common/common:thread_lib",
         "//source/common/event:libevent_lib",
         "//test/test_common:environment_lib",
         "//test/test_common:printers_lib",
-    ],
+    ] + select({
+        "//bazel:disable_signal_trace": [],
+        "//conditions:default": ["//source/exe:sigaction_lib"],
+    }),
 )

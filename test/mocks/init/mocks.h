@@ -9,6 +9,7 @@
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace Init {
 
 class MockTarget : public Target {
@@ -39,4 +40,5 @@ public:
   ReadyWatcher initialized_;
 };
 
-} // Init
+} // namespace Init
+} // namespace Envoy

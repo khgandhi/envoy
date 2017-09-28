@@ -8,6 +8,7 @@
 
 #include "gtest/gtest.h"
 
+namespace Envoy {
 namespace Network {
 
 class ListenSocketImplTest : public testing::TestWithParam<Address::IpVersion> {
@@ -50,7 +51,7 @@ TEST_P(ListenSocketImplTest, BindSpecificPort) {
 
 // Validate that we get port allocation when binding to port zero.
 TEST_P(ListenSocketImplTest, BindPortZero) {
-  auto loopback = Network::Test::getSomeLoopbackAddress(version_);
+  auto loopback = Network::Test::getCanonicalLoopbackAddress(version_);
   TcpListenSocket socket(loopback, true);
   EXPECT_EQ(Address::Type::Ip, socket.localAddress()->type());
   EXPECT_EQ(version_, socket.localAddress()->ip()->version());
@@ -58,4 +59,5 @@ TEST_P(ListenSocketImplTest, BindPortZero) {
   EXPECT_GT(socket.localAddress()->ip()->port(), 0U);
 }
 
-} // Network
+} // namespace Network
+} // namespace Envoy

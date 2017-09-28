@@ -26,6 +26,7 @@ front_envoy_clusters = {
     'service1': {},
     'service2': {},
     'service3': {},
+    'ratelimit': {}
 }
 
 # This is the set of internal services that local Envoys will route to. All services that will be
@@ -34,7 +35,9 @@ front_envoy_clusters = {
 # routing_helper.template.json for the types of options supported.
 service_to_service_envoy_clusters = {
     'ratelimit': {},
-    'service1': {},
+    'service1': {
+        'service_to_service_rate_limit': True
+    },
     'service3': {}
 }
 
@@ -111,4 +114,5 @@ generate_config(SCRIPT_DIR, 'envoy_service_to_service.template.json',
                 external_virtual_hosts=external_virtual_hosts,
                 mongos_servers=mongos_servers)
 
-shutil.copy(os.path.join(SCRIPT_DIR, 'google_com_proxy.json'), OUT_DIR)
+for google_ext in ['json', 'yaml', 'v2.yaml']:
+  shutil.copy(os.path.join(SCRIPT_DIR, 'google_com_proxy.%s' % google_ext), OUT_DIR)

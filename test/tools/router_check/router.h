@@ -16,6 +16,7 @@
 #include "test/test_common/utility.h"
 #include "test/tools/router_check/json/tool_config_schemas.h"
 
+namespace Envoy {
 /**
  * Struct that stores the configuration parameters of the router check tool extracted from a json
  * input file.
@@ -28,7 +29,7 @@ struct ToolConfig {
    * @return ToolConfig a ToolConfig instance with member variables set by the tool config json
    * file.
    */
-  static ToolConfig create(const Json::ObjectPtr& check_config);
+  static ToolConfig create(const Json::ObjectSharedPtr check_config);
 
   std::unique_ptr<Http::TestHeaderMapImpl> headers_;
   Router::RouteConstSharedPtr route_;
@@ -74,6 +75,8 @@ private:
   bool compareRedirectPath(ToolConfig& tool_config, const std::string& expected);
   bool compareHeaderField(ToolConfig& tool_config, const std::string& field,
                           const std::string& expected);
+  bool compareCustomHeaderField(ToolConfig& tool_config, const std::string& field,
+                                const std::string& expected);
   /**
    * Compare the expected and acutal route parameter values. Print out match details if details_
    * flag is set.
@@ -91,3 +94,4 @@ private:
   std::unique_ptr<NiceMock<Upstream::MockClusterManager>> cm_;
   std::unique_ptr<Router::ConfigImpl> config_;
 };
+} // namespace Envoy

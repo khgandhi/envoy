@@ -13,8 +13,10 @@
 
 #include "common/http/rest_api_fetcher.h"
 #include "common/json/json_loader.h"
+#include "common/network/cidr_range.h"
 #include "common/network/utility.h"
 
+namespace Envoy {
 namespace Filter {
 namespace Auth {
 namespace ClientSsl {
@@ -55,9 +57,6 @@ public:
   }
   size_t size() const { return allowed_sha256_digests_.size(); }
 
-  // ThreadLocal::ThreadLocalObject
-  void shutdown() override {}
-
 private:
   std::unordered_set<std::string> allowed_sha256_digests_;
 };
@@ -74,30 +73,28 @@ typedef std::shared_ptr<Config> ConfigSharedPtr;
  */
 class Config : public Http::RestApiFetcher {
 public:
-  static ConfigSharedPtr create(const Json::Object& config, ThreadLocal::Instance& tls,
+  static ConfigSharedPtr create(const Json::Object& config, ThreadLocal::SlotAllocator& tls,
                                 Upstream::ClusterManager& cm, Event::Dispatcher& dispatcher,
-                                Stats::Store& stats_store, Runtime::RandomGenerator& random);
+                                Stats::Scope& scope, Runtime::RandomGenerator& random);
 
   const AllowedPrincipals& allowedPrincipals();
-  const Network::IpList& ipWhiteList() { return ip_white_list_; }
+  const Network::Address::IpList& ipWhiteList() { return ip_white_list_; }
   GlobalStats& stats() { return stats_; }
 
 private:
-  Config(const Json::Object& config, ThreadLocal::Instance& tls, Upstream::ClusterManager& cm,
-         Event::Dispatcher& dispatcher, Stats::Store& stats_store,
-         Runtime::RandomGenerator& random);
+  Config(const Json::Object& config, ThreadLocal::SlotAllocator& tls, Upstream::ClusterManager& cm,
+         Event::Dispatcher& dispatcher, Stats::Scope& scope, Runtime::RandomGenerator& random);
 
-  static GlobalStats generateStats(Stats::Store& store, const std::string& prefix);
+  static GlobalStats generateStats(Stats::Scope& scope, const std::string& prefix);
 
   // Http::RestApiFetcher
   void createRequest(Http::Message& request) override;
   void parseResponse(const Http::Message& response) override;
   void onFetchComplete() override {}
-  void onFetchFailure(EnvoyException* e) override;
+  void onFetchFailure(const EnvoyException* e) override;
 
-  ThreadLocal::Instance& tls_;
-  uint32_t tls_slot_;
-  Network::IpList ip_white_list_;
+  ThreadLocal::SlotPtr tls_;
+  Network::Address::IpList ip_white_list_;
   GlobalStats stats_;
 };
 
@@ -117,7 +114,9 @@ public:
   }
 
   // Network::ConnectionCallbacks
-  void onEvent(uint32_t events) override;
+  void onEvent(Network::ConnectionEvent event) override;
+  void onAboveWriteBufferHighWatermark() override {}
+  void onBelowWriteBufferLowWatermark() override {}
 
 private:
   ConfigSharedPtr config_;
@@ -125,5 +124,6 @@ private:
 };
 
 } // ClientSsl
-} // Auth
-} // Filter
+} // namespace Auth
+} // namespace Filter
+} // namespace Envoy

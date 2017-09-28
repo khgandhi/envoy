@@ -1,68 +1,43 @@
 #include <iostream>
 #include <memory>
 
-#include "common/event/libevent.h"
-#include "common/local_info/local_info_impl.h"
-#include "common/network/utility.h"
-#include "common/stats/thread_local_store.h"
-
-#include "exe/hot_restart.h"
+#include "exe/main_common.h"
 
 #ifdef ENVOY_HANDLE_SIGNALS
 #include "exe/signal_action.h"
 #endif
 
-#include "server/drain_manager_impl.h"
-#include "server/options_impl.h"
-#include "server/server.h"
-#include "server/test_hooks.h"
+#ifdef ENVOY_HOT_RESTART
+#include "server/hot_restart_impl.h"
+#endif
 
-#include "ares.h"
+#include "server/options_impl.h"
+
 #include "spdlog/spdlog.h"
 
-namespace Server {
+// NOLINT(namespace-envoy)
 
-class ProdComponentFactory : public ComponentFactory {
-public:
-  // Server::DrainManagerFactory
-  DrainManagerPtr createDrainManager(Instance& server) override {
-    return DrainManagerPtr{new DrainManagerImpl(server)};
-  }
-
-  Runtime::LoaderPtr createRuntime(Server::Instance& server,
-                                   Server::Configuration::Initial& config) override {
-    return Server::InstanceUtil::createRuntime(server, config);
-  }
-};
-
-} // Server
-
+/**
+ * Basic Site-Specific main()
+ *
+ * This should be used to do setup tasks specific to a particular site's
+ * deployment such as initializing signal handling.  It calls main_common
+ * after setting up command line options.
+ */
 int main(int argc, char** argv) {
 #ifdef ENVOY_HANDLE_SIGNALS
   // Enabled by default. Control with "bazel --define=signal_trace=disabled"
-  SignalAction handle_sigs;
+  Envoy::SignalAction handle_sigs;
 #endif
-  ares_library_init(ARES_LIB_INIT_ALL);
-  Event::Libevent::Global::initialize();
-  OptionsImpl options(argc, argv, Server::SharedMemory::version(), spdlog::level::warn);
 
-  std::unique_ptr<Server::HotRestartImpl> restarter;
-  try {
-    restarter.reset(new Server::HotRestartImpl(options));
-  } catch (EnvoyException& e) {
-    std::cerr << "unable to initialize hot restart: " << e.what() << std::endl;
-    return 1;
-  }
+#ifdef ENVOY_HOT_RESTART
+  // Enabled by default, except on OS X. Control with "bazel --define=hot_restart=disabled"
+  const std::string shared_mem_version = Envoy::Server::SharedMemory::version();
+#else
+  const std::string shared_mem_version = "disabled";
+#endif
 
-  Logger::Registry::initialize(options.logLevel(), restarter->logLock());
-  DefaultTestHooks default_test_hooks;
-  Stats::ThreadLocalStoreImpl stats_store(*restarter);
-  Server::ProdComponentFactory component_factory;
-  LocalInfo::LocalInfoImpl local_info(Network::Utility::getLocalAddress(), options.serviceZone(),
-                                      options.serviceClusterName(), options.serviceNodeName());
-  Server::InstanceImpl server(options, default_test_hooks, *restarter, stats_store,
-                              restarter->accessLogLock(), component_factory, local_info);
-  server.run();
-  ares_library_cleanup();
-  return 0;
+  Envoy::OptionsImpl options(argc, argv, shared_mem_version, spdlog::level::warn);
+
+  return Envoy::main_common(options);
 }

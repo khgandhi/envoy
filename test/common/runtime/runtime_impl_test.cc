@@ -17,6 +17,7 @@ using testing::NiceMock;
 using testing::Return;
 using testing::ReturnNew;
 
+namespace Envoy {
 namespace Runtime {
 
 TEST(UUID, checkLengthOfUUID) {
@@ -112,4 +113,5 @@ TEST(NullRuntimeImplTest, All) {
   EXPECT_TRUE(loader.snapshot().featureEnabled("foo", 50));
 }
 
-} // Runtime
+} // namespace Runtime
+} // namespace Envoy

@@ -8,6 +8,7 @@
 
 using testing::_;
 
+namespace Envoy {
 namespace Dynamo {
 
 TEST(DynamoUtility, PartitionIdStatString) {
@@ -55,4 +56,5 @@ TEST(DynamoUtility, PartitionIdStatString) {
   }
 }
 
-} // Dynamo
+} // namespace Dynamo
+} // namespace Envoy

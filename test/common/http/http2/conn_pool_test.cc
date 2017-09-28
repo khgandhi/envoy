@@ -7,6 +7,7 @@
 #include "common/upstream/upstream_impl.h"
 
 #include "test/common/http/common.h"
+#include "test/common/upstream/utility.h"
 #include "test/mocks/event/mocks.h"
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/network/mocks.h"
@@ -17,15 +18,16 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::DoAll;
-using testing::Invoke;
 using testing::InSequence;
+using testing::Invoke;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
 using testing::SaveArg;
+using testing::_;
 
+namespace Envoy {
 namespace Http {
 namespace Http2 {
 
@@ -42,10 +44,8 @@ public:
 
   MOCK_METHOD1(createCodecClient_, CodecClient*(Upstream::Host::CreateConnectionData& data));
 
-  uint64_t maxConcurrentStreams() override { return max_concurrent_streams_; }
   uint32_t maxTotalStreams() override { return max_streams_; }
 
-  uint64_t max_concurrent_streams_{std::numeric_limits<uint64_t>::max()};
   uint32_t max_streams_{std::numeric_limits<uint32_t>::max()};
 };
 
@@ -62,7 +62,7 @@ public:
 
   ~Http2ConnPoolImplTest() {
     // Make sure all gauges are 0.
-    for (Stats::GaugeSharedPtr gauge : cluster_->stats_store_.gauges()) {
+    for (const Stats::GaugeSharedPtr& gauge : cluster_->stats_store_.gauges()) {
       EXPECT_EQ(0U, gauge->value());
     }
   }
@@ -79,24 +79,25 @@ public:
         new CodecClientForTest(std::move(connection), test_client.codec_,
                                [this](CodecClient*) -> void { onClientDestroy(); }, nullptr);
 
-    EXPECT_CALL(dispatcher_, createClientConnection_(_)).WillOnce(Return(test_client.connection_));
+    EXPECT_CALL(dispatcher_, createClientConnection_(_, _))
+        .WillOnce(Return(test_client.connection_));
     EXPECT_CALL(pool_, createCodecClient_(_))
-        .WillOnce(Invoke([this](Upstream::Host::CreateConnectionData&)
-                             -> CodecClient* { return test_clients_.back().codec_client_; }));
+        .WillOnce(Invoke([this](Upstream::Host::CreateConnectionData&) -> CodecClient* {
+          return test_clients_.back().codec_client_;
+        }));
     EXPECT_CALL(*test_client.connect_timer_, enableTimer(_));
   }
 
   void expectClientConnect(size_t index) {
     EXPECT_CALL(*test_clients_[index].connect_timer_, disableTimer());
-    test_clients_[index].connection_->raiseEvents(Network::ConnectionEvent::Connected);
+    test_clients_[index].connection_->raiseEvent(Network::ConnectionEvent::Connected);
   }
 
   MOCK_METHOD0(onClientDestroy, void());
 
   NiceMock<Event::MockDispatcher> dispatcher_;
   std::shared_ptr<Upstream::MockClusterInfo> cluster_{new NiceMock<Upstream::MockClusterInfo>()};
-  Upstream::HostSharedPtr host_{new Upstream::HostImpl(
-      cluster_, "", Network::Utility::resolveUrl("tcp://127.0.0.1:80"), false, 1, "")};
+  Upstream::HostSharedPtr host_{Upstream::makeTestHost(cluster_, "tcp://127.0.0.1:80")};
   TestConnPoolImpl pool_;
   std::vector<TestCodecClient> test_clients_;
   NiceMock<Runtime::MockLoader> runtime_;
@@ -129,7 +130,7 @@ TEST_F(Http2ConnPoolImplTest, VerifyConnectionTimingStats) {
   EXPECT_CALL(r1.decoder_, decodeHeaders_(_, true));
   r1.inner_decoder_->decodeHeaders(HeaderMapPtr{new HeaderMapImpl{}}, true);
 
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
 }
@@ -140,7 +141,7 @@ TEST_F(Http2ConnPoolImplTest, VerifyConnectionTimingStats) {
 TEST_F(Http2ConnPoolImplTest, VerifyBufferLimits) {
   expectClientCreate();
   EXPECT_CALL(*cluster_, perConnectionBufferLimitBytes()).WillOnce(Return(8192));
-  EXPECT_CALL(*test_clients_.back().connection_, setReadBufferLimit(8192));
+  EXPECT_CALL(*test_clients_.back().connection_, setBufferLimits(8192));
 
   ActiveTestRequest r1(*this, 0);
   EXPECT_CALL(r1.inner_encoder_, encodeHeaders(_, true));
@@ -149,7 +150,7 @@ TEST_F(Http2ConnPoolImplTest, VerifyBufferLimits) {
   EXPECT_CALL(r1.decoder_, decodeHeaders_(_, true));
   r1.inner_decoder_->decodeHeaders(HeaderMapPtr{new HeaderMapImpl{}}, true);
 
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
 }
@@ -171,7 +172,7 @@ TEST_F(Http2ConnPoolImplTest, RequestAndResponse) {
   EXPECT_CALL(r2.decoder_, decodeHeaders_(_, true));
   r2.inner_decoder_->decodeHeaders(HeaderMapPtr{new HeaderMapImpl{}}, true);
 
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
 }
@@ -186,7 +187,7 @@ TEST_F(Http2ConnPoolImplTest, LocalReset) {
   expectClientConnect(0);
   r1.callbacks_.outer_encoder_->getStream().resetStream(Http::StreamResetReason::LocalReset);
 
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
   EXPECT_EQ(1U, cluster_->stats_.upstream_rq_tx_reset_.value());
@@ -202,7 +203,7 @@ TEST_F(Http2ConnPoolImplTest, RemoteReset) {
   expectClientConnect(0);
   r1.inner_encoder_.stream_.resetStream(Http::StreamResetReason::RemoteReset);
 
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
   EXPECT_EQ(1U, cluster_->stats_.upstream_rq_rx_reset_.value());
@@ -223,7 +224,7 @@ TEST_F(Http2ConnPoolImplTest, DrainDisconnectWithActiveRequest) {
 
   EXPECT_CALL(dispatcher_, deferredDelete_(_));
   EXPECT_CALL(drained, ready());
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
 }
@@ -255,7 +256,7 @@ TEST_F(Http2ConnPoolImplTest, DrainDisconnectDrainingWithActiveRequest) {
 
   EXPECT_CALL(dispatcher_, deferredDelete_(_));
   EXPECT_CALL(drained, ready());
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
 }
@@ -346,33 +347,13 @@ TEST_F(Http2ConnPoolImplTest, ConnectTimeout) {
   EXPECT_CALL(r2.decoder_, decodeHeaders_(_, true));
   r2.inner_decoder_->decodeHeaders(HeaderMapPtr{new HeaderMapImpl{}}, true);
 
-  test_clients_[1].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[1].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
 
   EXPECT_EQ(1U, cluster_->stats_.upstream_cx_connect_fail_.value());
   EXPECT_EQ(1U, cluster_->stats_.upstream_cx_connect_timeout_.value());
   EXPECT_EQ(1U, cluster_->stats_.upstream_rq_pending_failure_eject_.value());
-}
-
-TEST_F(Http2ConnPoolImplTest, MaxRequests) {
-  InSequence s;
-  pool_.max_concurrent_streams_ = 1;
-
-  expectClientCreate();
-  ActiveTestRequest r1(*this, 0);
-  EXPECT_CALL(r1.inner_encoder_, encodeHeaders(_, true));
-  r1.callbacks_.outer_encoder_->encodeHeaders(HeaderMapImpl{}, true);
-  expectClientConnect(0);
-
-  ConnPoolCallbacks callbacks;
-  Http::MockStreamDecoder decoder;
-  EXPECT_CALL(callbacks.pool_failure_, ready());
-  EXPECT_EQ(nullptr, pool_.newStream(decoder, callbacks));
-
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
-  EXPECT_CALL(*this, onClientDestroy());
-  dispatcher_.clearDeferredDeleteList();
 }
 
 TEST_F(Http2ConnPoolImplTest, MaxGlobalRequests) {
@@ -391,7 +372,7 @@ TEST_F(Http2ConnPoolImplTest, MaxGlobalRequests) {
   EXPECT_CALL(callbacks.pool_failure_, ready());
   EXPECT_EQ(nullptr, pool_.newStream(decoder, callbacks));
 
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy());
   dispatcher_.clearDeferredDeleteList();
 }
@@ -417,11 +398,14 @@ TEST_F(Http2ConnPoolImplTest, GoAway) {
   EXPECT_CALL(r2.decoder_, decodeHeaders_(_, true));
   r2.inner_decoder_->decodeHeaders(HeaderMapPtr{new HeaderMapImpl{}}, true);
 
-  test_clients_[1].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
-  test_clients_[0].connection_->raiseEvents(Network::ConnectionEvent::RemoteClose);
+  test_clients_[1].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
+  test_clients_[0].connection_->raiseEvent(Network::ConnectionEvent::RemoteClose);
   EXPECT_CALL(*this, onClientDestroy()).Times(2);
   dispatcher_.clearDeferredDeleteList();
+
+  EXPECT_EQ(1U, cluster_->stats_.upstream_cx_close_notify_.value());
 }
 
-} // Http2
-} // Http
+} // namespace Http2
+} // namespace Http
+} // namespace Envoy

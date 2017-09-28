@@ -14,6 +14,7 @@
 #include "envoy/stats/stats_macros.h"
 
 #include "common/buffer/buffer_impl.h"
+#include "common/buffer/watermark_buffer.h"
 #include "common/common/linked_object.h"
 #include "common/common/logger.h"
 #include "common/http/codec_helper.h"
@@ -21,6 +22,7 @@
 
 #include "nghttp2/nghttp2.h"
 
+namespace Envoy {
 namespace Http {
 namespace Http2 {
 
@@ -31,7 +33,7 @@ const std::string ALPN_STRING = "h2";
 const std::string CLIENT_MAGIC_PREFIX = "PRI * HTTP/2";
 
 /**
- * All stats for the http/2 codec. @see stats_macros.h
+ * All stats for the HTTP/2 codec. @see stats_macros.h
  */
 // clang-format off
 #define ALL_HTTP2_CODEC_STATS(COUNTER)                                                             \
@@ -43,7 +45,7 @@ const std::string CLIENT_MAGIC_PREFIX = "PRI * HTTP/2";
 // clang-format on
 
 /**
- * Wrapper struct for the http/2 codec stats. @see stats_macros.h
+ * Wrapper struct for the HTTP/2 codec stats. @see stats_macros.h
  */
 struct CodecStats {
   ALL_HTTP2_CODEC_STATS(GENERATE_COUNTER_STRUCT)
@@ -65,12 +67,14 @@ public:
 /**
  * Base class for HTTP/2 client and server codecs.
  */
-class ConnectionImpl : public virtual Connection, Logger::Loggable<Logger::Id::http2> {
+class ConnectionImpl : public virtual Connection, protected Logger::Loggable<Logger::Id::http2> {
 public:
-  ConnectionImpl(Network::Connection& connection, Stats::Scope& stats)
+  ConnectionImpl(Network::Connection& connection, Stats::Scope& stats,
+                 const Http2Settings& http2_settings)
       : stats_{ALL_HTTP2_CODEC_STATS(POOL_COUNTER_PREFIX(stats, "http2."))},
-        connection_(connection), dispatching_(false), raised_goaway_(false),
-        pending_deferred_reset_(false) {}
+        connection_(connection),
+        per_stream_buffer_limit_(http2_settings.initial_stream_window_size_), dispatching_(false),
+        raised_goaway_(false), pending_deferred_reset_(false) {}
 
   ~ConnectionImpl();
 
@@ -80,8 +84,17 @@ public:
   Protocol protocol() override { return Protocol::Http2; }
   void shutdownNotice() override;
   bool wantsToWrite() override { return nghttp2_session_want_write(session_); }
-
-  static const uint64_t MAX_CONCURRENT_STREAMS = 1024;
+  // Propogate network connection watermark events to each stream on the connection.
+  void onUnderlyingConnectionAboveWriteBufferHighWatermark() override {
+    for (auto& stream : active_streams_) {
+      stream->runHighWatermarkCallbacks();
+    }
+  }
+  void onUnderlyingConnectionBelowWriteBufferLowWatermark() override {
+    for (auto& stream : active_streams_) {
+      stream->runLowWatermarkCallbacks();
+    }
+  }
 
 protected:
   /**
@@ -121,8 +134,7 @@ protected:
                       public Event::DeferredDeletable,
                       public StreamCallbackHelper {
 
-    StreamImpl(ConnectionImpl& parent);
-    ~StreamImpl();
+    StreamImpl(ConnectionImpl& parent, uint32_t buffer_limit);
 
     StreamImpl* base() { return this; }
     ssize_t onDataSourceRead(uint64_t length, uint32_t* data_flags);
@@ -144,26 +156,51 @@ protected:
     void addCallbacks(StreamCallbacks& callbacks) override { addCallbacks_(callbacks); }
     void removeCallbacks(StreamCallbacks& callbacks) override { removeCallbacks_(callbacks); }
     void resetStream(StreamResetReason reason) override;
+    virtual void readDisable(bool disable) override;
+    virtual uint32_t bufferLimit() override { return pending_recv_data_.highWatermark(); }
+
+    void setWriteBufferWatermarks(uint32_t low_watermark, uint32_t high_watermark) {
+      pending_recv_data_.setWatermarks(low_watermark, high_watermark);
+      pending_send_data_.setWatermarks(low_watermark, high_watermark);
+    }
+
+    // If the receive buffer encounters watermark callbacks, enable/disable reads on this stream.
+    void pendingRecvBufferHighWatermark();
+    void pendingRecvBufferLowWatermark();
+
+    // If the send buffer encounters watermark callbacks, propogate this information to the streams.
+    // The router and connection manager will propogate them on as appropriate.
+    void pendingSendBufferHighWatermark();
+    void pendingSendBufferLowWatermark();
 
     // Max header size of 63K. This is arbitrary but makes it easier to test since nghttp2 doesn't
     // appear to transmit headers greater than approximtely 64K (NGHTTP2_MAX_HEADERSLEN) for reasons
     // I don't fully understand.
     static const uint64_t MAX_HEADER_SIZE = 63 * 1024;
 
+    bool buffers_overrun() const { return read_disable_count_ > 0; }
+
     ConnectionImpl& parent_;
     HeaderMapImplPtr headers_;
     StreamDecoder* decoder_{};
     int32_t stream_id_{-1};
-    Buffer::OwnedImpl pending_recv_data_;
-    Buffer::OwnedImpl pending_send_data_;
+    uint32_t unconsumed_bytes_{0};
+    uint32_t read_disable_count_{0};
+    Buffer::WatermarkBuffer pending_recv_data_{
+        [this]() -> void { this->pendingRecvBufferLowWatermark(); },
+        [this]() -> void { this->pendingRecvBufferHighWatermark(); }};
+    Buffer::WatermarkBuffer pending_send_data_{
+        [this]() -> void { this->pendingSendBufferLowWatermark(); },
+        [this]() -> void { this->pendingSendBufferHighWatermark(); }};
     HeaderMapPtr pending_trailers_;
     Optional<StreamResetReason> deferred_reset_;
     HeaderString cookies_;
-    bool local_end_stream_ : 1;
     bool local_end_stream_sent_ : 1;
     bool remote_end_stream_ : 1;
     bool data_deferred_ : 1;
     bool waiting_for_non_informational_headers_ : 1;
+    bool pending_receive_buffer_high_watermark_called_ : 1;
+    bool pending_send_buffer_high_watermark_called_ : 1;
   };
 
   typedef std::unique_ptr<StreamImpl> StreamImplPtr;
@@ -194,7 +231,7 @@ protected:
   StreamImpl* getStream(int32_t stream_id);
   int saveHeader(const nghttp2_frame* frame, HeaderString&& name, HeaderString&& value);
   void sendPendingFrames();
-  void sendSettings(uint64_t codec_options);
+  void sendSettings(const Http2Settings& http2_settings, bool disable_push);
 
   static Http2Callbacks http2_callbacks_;
   static Http2Options http2_options_;
@@ -202,6 +239,8 @@ protected:
   std::list<StreamImplPtr> active_streams_;
   nghttp2_session* session_{};
   CodecStats stats_;
+  Network::Connection& connection_;
+  uint32_t per_stream_buffer_limit_;
 
 private:
   virtual ConnectionCallbacks& callbacks() PURE;
@@ -214,13 +253,8 @@ private:
   ssize_t onSend(const uint8_t* data, size_t length);
   int onStreamClose(int32_t stream_id, uint32_t error_code);
 
-  // For now just set all window sizes (stream and connection) to 256MiB. We can adjust later if
-  // needed.
-  static const uint64_t DEFAULT_WINDOW_SIZE = 256 * 1024 * 1024;
-
   static const std::unique_ptr<const Http::HeaderMap> CONTINUE_HEADER;
 
-  Network::Connection& connection_;
   bool dispatching_ : 1;
   bool raised_goaway_ : 1;
   bool pending_deferred_reset_ : 1;
@@ -232,7 +266,7 @@ private:
 class ClientConnectionImpl : public ClientConnection, public ConnectionImpl {
 public:
   ClientConnectionImpl(Network::Connection& connection, ConnectionCallbacks& callbacks,
-                       Stats::Scope& stats, uint64_t codec_options);
+                       Stats::Scope& stats, const Http2Settings& http2_settings);
 
   // Http::ClientConnection
   Http::StreamEncoder& newStream(StreamDecoder& response_decoder) override;
@@ -243,7 +277,7 @@ private:
   int onBeginHeaders(const nghttp2_frame* frame) override;
   int onHeader(const nghttp2_frame* frame, HeaderString&& name, HeaderString&& value) override;
 
-  ConnectionCallbacks& callbacks_;
+  Http::ConnectionCallbacks& callbacks_;
 };
 
 /**
@@ -252,7 +286,7 @@ private:
 class ServerConnectionImpl : public ServerConnection, public ConnectionImpl {
 public:
   ServerConnectionImpl(Network::Connection& connection, ServerConnectionCallbacks& callbacks,
-                       Stats::Store& stats, uint64_t codec_options);
+                       Stats::Scope& scope, const Http2Settings& http2_settings);
 
 private:
   // ConnectionImpl
@@ -263,5 +297,6 @@ private:
   ServerConnectionCallbacks& callbacks_;
 };
 
-} // Http2
-} // Http
+} // namespace Http2
+} // namespace Http
+} // namespace Envoy

@@ -6,7 +6,10 @@
 
 #include "envoy/thread/thread.h"
 
+namespace Envoy {
 namespace Thread {
+
+typedef int32_t ThreadId;
 
 /**
  * Wrapper for a pthread thread. We don't use std::thread because it eats exceptions and leads to
@@ -19,7 +22,7 @@ public:
   /**
    * Get current thread id.
    */
-  static int32_t currentThreadId();
+  static ThreadId currentThreadId();
 
   /**
    * Join on thread exit.
@@ -46,4 +49,5 @@ private:
   std::mutex mutex_;
 };
 
-} // Thread
+} // namespace Thread
+} // namespace Envoy

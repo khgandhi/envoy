@@ -10,6 +10,7 @@
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace Filesystem {
 
 class MockOsSysCalls : public OsSysCalls {
@@ -41,6 +42,7 @@ public:
   // Filesystem::File
   MOCK_METHOD1(write, void(const std::string& data));
   MOCK_METHOD0(reopen, void());
+  MOCK_METHOD0(flush, void());
 };
 
 class MockWatcher : public Watcher {
@@ -51,4 +53,5 @@ public:
   MOCK_METHOD3(addWatch, void(const std::string&, uint32_t, OnChangedCb));
 };
 
-} // Filesystem
+} // namespace Filesystem
+} // namespace Envoy

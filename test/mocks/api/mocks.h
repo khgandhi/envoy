@@ -10,6 +10,7 @@
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace Api {
 
 class MockApi : public Api {
@@ -32,4 +33,5 @@ public:
   std::shared_ptr<Filesystem::MockFile> file_{new Filesystem::MockFile()};
 };
 
-} // Api
+} // namespace Api
+} // namespace Envoy

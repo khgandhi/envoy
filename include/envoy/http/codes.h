@@ -1,5 +1,6 @@
 #pragma once
 
+namespace Envoy {
 namespace Http {
 
 /**
@@ -71,4 +72,5 @@ enum class Code {
   // clang-format on
 };
 
-} // Http
+} // namespace Http
+} // namespace Envoy

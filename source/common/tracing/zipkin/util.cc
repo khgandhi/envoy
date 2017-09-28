@@ -11,6 +11,7 @@
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 
+namespace Envoy {
 // TODO(fabolive): Need to add interfaces to the JSON namespace
 
 namespace Zipkin {
@@ -48,8 +49,10 @@ void Util::addArrayToJson(std::string& target, const std::vector<std::string>& j
 
 uint64_t Util::generateRandom64() {
   uint64_t seed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                      ProdSystemTimeSource::instance_.currentTime().time_since_epoch()).count();
+                      ProdSystemTimeSource::instance_.currentTime().time_since_epoch())
+                      .count();
   std::mt19937_64 rand_64(seed);
   return rand_64();
 }
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

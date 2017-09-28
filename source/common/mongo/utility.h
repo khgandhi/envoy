@@ -4,6 +4,7 @@
 
 #include "envoy/mongo/codec.h"
 
+namespace Envoy {
 namespace Mongo {
 
 /**
@@ -67,4 +68,5 @@ private:
   std::string command_;
 };
 
-} // Mongo
+} // namespace Mongo
+} // namespace Envoy

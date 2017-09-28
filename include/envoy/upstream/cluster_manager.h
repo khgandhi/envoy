@@ -6,13 +6,20 @@
 #include <string>
 #include <unordered_map>
 
+#include "envoy/access_log/access_log.h"
+#include "envoy/config/grpc_mux.h"
 #include "envoy/http/async_client.h"
 #include "envoy/http/conn_pool.h"
-#include "envoy/json/json_object.h"
+#include "envoy/local_info/local_info.h"
+#include "envoy/runtime/runtime.h"
 #include "envoy/upstream/load_balancer.h"
 #include "envoy/upstream/thread_local_cluster.h"
 #include "envoy/upstream/upstream.h"
 
+#include "api/bootstrap.pb.h"
+#include "api/cds.pb.h"
+
+namespace Envoy {
 namespace Upstream {
 
 /**
@@ -31,7 +38,7 @@ public:
    *
    * @return true if the action results in an add/update of a cluster.
    */
-  virtual bool addOrUpdatePrimaryCluster(const Json::Object& config) PURE;
+  virtual bool addOrUpdatePrimaryCluster(const envoy::api::v2::Cluster& cluster) PURE;
 
   /**
    * Set a callback that will be invoked when all owned clusters have been initialized.
@@ -47,9 +54,8 @@ public:
   virtual ClusterInfoMap clusters() PURE;
 
   /**
-   * @return ClusterInfoConstSharedPtr the thread local cluster with the given name or nullptr if it
-   *does not
-   * exist. This is thread safe.
+   * @return ThreadLocalCluster* the thread local cluster with the given name or nullptr if it
+   * does not exist. This is thread safe.
    *
    * NOTE: The pointer returned by this function is ONLY safe to use in the context of the owning
    * call (or if the caller knows that the cluster is fully static and will never be deleted). In
@@ -79,7 +85,8 @@ public:
    * Returns both a connection and the host that backs the connection. Both can be nullptr if there
    * is no host available in the cluster.
    */
-  virtual Host::CreateConnectionData tcpConnForCluster(const std::string& cluster) PURE;
+  virtual Host::CreateConnectionData tcpConnForCluster(const std::string& cluster,
+                                                       LoadBalancerContext* context) PURE;
 
   /**
    * Returns a client that can be used to make async HTTP calls against the given cluster. The
@@ -101,15 +108,27 @@ public:
    * Shutdown the cluster manager prior to destroying connection pools and other thread local data.
    */
   virtual void shutdown() PURE;
+
+  /**
+   * Returns an optional source address for upstream connections to bind to.
+   *
+   * @return Network::Address::InstanceConstSharedPtr a source address to bind to or nullptr if no
+   * bind need occur.
+   */
+  virtual const Network::Address::InstanceConstSharedPtr& sourceAddress() const PURE;
+
+  /**
+   * Return a reference to the singleton ADS provider for upstream control plane muxing of xDS. This
+   * is treated somewhat as a special case in ClusterManager, since it does not relate logically to
+   * the management of clusters but instead is required early in ClusterManager/server
+   * initialization and in various sites that need ClusterManager for xDS API interfacing.
+   *
+   * @return GrpcMux& ADS API provider referencee.
+   */
+  virtual Config::GrpcMux& adsMux() PURE;
 };
 
-/**
- * Global configuration for any SDS clusters.
- */
-struct SdsConfig {
-  std::string sds_cluster_name_;
-  std::chrono::milliseconds refresh_delay_;
-};
+typedef std::unique_ptr<ClusterManager> ClusterManagerPtr;
 
 /**
  * Abstract interface for a CDS API provider.
@@ -128,6 +147,16 @@ public:
    * server. If the initial load fails, the callback will also be called.
    */
   virtual void setInitializedCb(std::function<void()> callback) PURE;
+
+  /**
+   * @return std::string last accepted version from fetch.
+   *
+   * TODO(dnoe): This would ideally return by reference, but this causes a
+   *             problem due to incompatible string implementations returned by
+   *             protobuf generated code. Revisit when string implementations
+   *             are converged.
+   */
+  virtual const std::string versionInfo() const PURE;
 };
 
 typedef std::unique_ptr<CdsApi> CdsApiPtr;
@@ -140,6 +169,16 @@ public:
   virtual ~ClusterManagerFactory() {}
 
   /**
+   * Allocate a cluster manager from configuration proto.
+   */
+  virtual ClusterManagerPtr clusterManagerFromProto(const envoy::api::v2::Bootstrap& bootstrap,
+                                                    Stats::Store& stats, ThreadLocal::Instance& tls,
+                                                    Runtime::Loader& runtime,
+                                                    Runtime::RandomGenerator& random,
+                                                    const LocalInfo::LocalInfo& local_info,
+                                                    AccessLog::AccessLogManager& log_manager) PURE;
+
+  /**
    * Allocate an HTTP connection pool.
    */
   virtual Http::ConnectionPool::InstancePtr allocateConnPool(Event::Dispatcher& dispatcher,
@@ -147,16 +186,20 @@ public:
                                                              ResourcePriority priority) PURE;
 
   /**
-   * Allocate a cluster from configuration JSON.
+   * Allocate a cluster from configuration proto.
    */
-  virtual ClusterPtr clusterFromJson(const Json::Object& cluster, ClusterManager& cm,
-                                     const Optional<SdsConfig>& sds_config,
-                                     Outlier::EventLoggerSharedPtr outlier_event_logger) PURE;
+  virtual ClusterSharedPtr clusterFromProto(const envoy::api::v2::Cluster& cluster,
+                                            ClusterManager& cm,
+                                            Outlier::EventLoggerSharedPtr outlier_event_logger,
+                                            bool added_via_api) PURE;
 
   /**
-   * Create a CDS API provider from configuration JSON.
+   * Create a CDS API provider from configuration proto.
    */
-  virtual CdsApiPtr createCds(const Json::Object& config, ClusterManager& cm) PURE;
+  virtual CdsApiPtr createCds(const envoy::api::v2::ConfigSource& cds_config,
+                              const Optional<envoy::api::v2::ConfigSource>& eds_config,
+                              ClusterManager& cm) PURE;
 };
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

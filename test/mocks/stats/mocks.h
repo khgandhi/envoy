@@ -7,11 +7,13 @@
 
 #include "envoy/stats/stats.h"
 #include "envoy/thread_local/thread_local.h"
+#include "envoy/upstream/cluster_manager.h"
 
 #include "common/stats/stats_impl.h"
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace Stats {
 
 class MockCounter : public Counter {
@@ -57,8 +59,10 @@ public:
   MockSink();
   ~MockSink();
 
+  MOCK_METHOD0(beginFlush, void());
   MOCK_METHOD2(flushCounter, void(const std::string& name, uint64_t delta));
   MOCK_METHOD2(flushGauge, void(const std::string& name, uint64_t value));
+  MOCK_METHOD0(endFlush, void());
   MOCK_METHOD2(onHistogramComplete, void(const std::string& name, uint64_t value));
   MOCK_METHOD2(onTimespanComplete, void(const std::string& name, std::chrono::milliseconds ms));
 };
@@ -94,4 +98,5 @@ public:
   MOCK_METHOD2(deliverTimingToSinks, void(const std::string&, std::chrono::milliseconds));
 };
 
-} // Stats
+} // namespace Stats
+} // namespace Envoy

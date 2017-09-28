@@ -15,9 +15,11 @@
 #include "common/http/header_map_impl.h"
 #include "common/http/headers.h"
 #include "common/network/utility.h"
+#include "common/protobuf/utility.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 namespace Http {
 
 void Utility::appendXff(HeaderMap& headers, const Network::Address::Instance& remote_address) {
@@ -25,15 +27,13 @@ void Utility::appendXff(HeaderMap& headers, const Network::Address::Instance& re
     return;
   }
 
-  // TODO PERF: Append and do not copy.
-  HeaderEntry* header = headers.ForwardedFor();
-  std::string forwarded_for = header ? header->value().c_str() : "";
-  if (!forwarded_for.empty()) {
-    forwarded_for += ", ";
+  HeaderString& header = headers.insertForwardedFor().value();
+  if (!header.empty()) {
+    header.append(", ", 2);
   }
 
-  forwarded_for += remote_address.ip()->addressAsString();
-  headers.insertForwardedFor().value(forwarded_for);
+  const std::string& address_as_string = remote_address.ip()->addressAsString();
+  header.append(address_as_string.c_str(), address_as_string.size());
 }
 
 std::string Utility::createSslRedirectPath(const HeaderMap& headers) {
@@ -71,6 +71,10 @@ Utility::QueryParams Utility::parseQueryString(const std::string& url) {
   return params;
 }
 
+const char* Utility::findQueryStringStart(const HeaderString& path) {
+  return std::find(path.c_str(), path.c_str() + path.size(), '?');
+}
+
 std::string Utility::parseCookieValue(const HeaderMap& headers, const std::string& key) {
 
   struct State {
@@ -81,27 +85,38 @@ std::string Utility::parseCookieValue(const HeaderMap& headers, const std::strin
   State state;
   state.key_ = key;
 
-  headers.iterate([](const HeaderEntry& header, void* context) -> void {
-    if (header.key() == Http::Headers::get().Cookie.get().c_str()) {
-      for (const std::string& s : StringUtil::split(std::string{header.value().c_str()}, ';')) {
-        size_t first_non_space = s.find_first_not_of(" ");
-        size_t equals_index = s.find('=');
-        std::string k = s.substr(first_non_space, equals_index - first_non_space);
-        State* state = static_cast<State*>(context);
-        if (k == state->key_) {
-          std::string v = s.substr(equals_index + 1, s.size() - 1);
+  headers.iterate(
+      [](const HeaderEntry& header, void* context) -> void {
+        // Find the cookie headers in the request (typically, there's only one).
+        if (header.key() == Http::Headers::get().Cookie.get().c_str()) {
+          // Split the cookie header into individual cookies.
+          for (const std::string& s : StringUtil::split(std::string{header.value().c_str()}, ';')) {
+            // Find the key part of the cookie (i.e. the name of the cookie).
+            size_t first_non_space = s.find_first_not_of(" ");
+            size_t equals_index = s.find('=');
+            if (equals_index == std::string::npos) {
+              // The cookie is malformed if it does not have an `=`. Continue
+              // checking other cookies in this header.
+              continue;
+            }
+            std::string k = s.substr(first_non_space, equals_index - first_non_space);
+            State* state = static_cast<State*>(context);
+            // If the key matches, parse the value from the rest of the cookie string.
+            if (k == state->key_) {
+              std::string v = s.substr(equals_index + 1, s.size() - 1);
 
-          // Cookie values may be wrapped in double quotes.
-          // https://tools.ietf.org/html/rfc6265#section-4.1.1
-          if (v.size() >= 2 && v.back() == '"' && v[0] == '"') {
-            v = v.substr(1, v.size() - 2);
+              // Cookie values may be wrapped in double quotes.
+              // https://tools.ietf.org/html/rfc6265#section-4.1.1
+              if (v.size() >= 2 && v.back() == '"' && v[0] == '"') {
+                v = v.substr(1, v.size() - 2);
+              }
+              state->ret_ = v;
+              return;
+            }
           }
-          state->ret_ = v;
-          return;
         }
-      }
-    }
-  }, &state);
+      },
+      &state);
 
   return state.ret_;
 }
@@ -126,22 +141,52 @@ bool Utility::isInternalRequest(const HeaderMap& headers) {
   return Network::Utility::isInternalAddress(forwarded_for->value().c_str());
 }
 
-uint64_t Utility::parseCodecOptions(const Json::Object& config) {
-  uint64_t ret = 0;
-  std::string options = config.getString("http_codec_options", "");
-  for (const std::string& option : StringUtil::split(options, ',')) {
-    if (option == "no_compression") {
-      ret |= CodecOptions::NoCompression;
-    } else {
-      throw EnvoyException(fmt::format("unknown http codec option '{}'", option));
-    }
-  }
+bool Utility::isWebSocketUpgradeRequest(const HeaderMap& headers) {
+  return (headers.Connection() && headers.Upgrade() &&
+          (0 == StringUtil::caseInsensitiveCompare(
+                    headers.Connection()->value().c_str(),
+                    Http::Headers::get().ConnectionValues.Upgrade.c_str())) &&
+          (0 == StringUtil::caseInsensitiveCompare(
+                    headers.Upgrade()->value().c_str(),
+                    Http::Headers::get().UpgradeValues.WebSocket.c_str())));
+}
 
+Http2Settings Utility::parseHttp2Settings(const envoy::api::v2::Http2ProtocolOptions& config) {
+  Http2Settings ret;
+  ret.hpack_table_size_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+      config, hpack_table_size, Http::Http2Settings::DEFAULT_HPACK_TABLE_SIZE);
+  ret.max_concurrent_streams_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+      config, max_concurrent_streams, Http::Http2Settings::DEFAULT_MAX_CONCURRENT_STREAMS);
+  ret.initial_stream_window_size_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(
+      config, initial_stream_window_size, Http::Http2Settings::DEFAULT_INITIAL_STREAM_WINDOW_SIZE);
+  ret.initial_connection_window_size_ =
+      PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, initial_connection_window_size,
+                                      Http::Http2Settings::DEFAULT_INITIAL_CONNECTION_WINDOW_SIZE);
   return ret;
 }
 
-void Utility::sendLocalReply(StreamDecoderFilterCallbacks& callbacks, Code response_code,
-                             const std::string& body_text) {
+Http1Settings Utility::parseHttp1Settings(const envoy::api::v2::Http1ProtocolOptions& config) {
+  Http1Settings ret;
+  ret.allow_absolute_url_ = PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, allow_absolute_url, false);
+  return ret;
+}
+
+void Utility::sendLocalReply(StreamDecoderFilterCallbacks& callbacks, const bool& is_reset,
+                             Code response_code, const std::string& body_text) {
+  sendLocalReply(
+      [&](HeaderMapPtr&& headers, bool end_stream) -> void {
+        callbacks.encodeHeaders(std::move(headers), end_stream);
+      },
+      [&](Buffer::Instance& data, bool end_stream) -> void {
+        callbacks.encodeData(data, end_stream);
+      },
+      is_reset, response_code, body_text);
+}
+
+void Utility::sendLocalReply(
+    std::function<void(HeaderMapPtr&& headers, bool end_stream)> encode_headers,
+    std::function<void(Buffer::Instance& data, bool end_stream)> encode_data, const bool& is_reset,
+    Code response_code, const std::string& body_text) {
   HeaderMapPtr response_headers{
       new HeaderMapImpl{{Headers::get().Status, std::to_string(enumToInt(response_code))}}};
   if (!body_text.empty()) {
@@ -149,10 +194,10 @@ void Utility::sendLocalReply(StreamDecoderFilterCallbacks& callbacks, Code respo
     response_headers->insertContentType().value(Headers::get().ContentTypeValues.Text);
   }
 
-  callbacks.encodeHeaders(std::move(response_headers), body_text.empty());
-  if (!body_text.empty()) {
+  encode_headers(std::move(response_headers), body_text.empty());
+  if (!body_text.empty() && !is_reset) {
     Buffer::OwnedImpl buffer(body_text);
-    callbacks.encodeData(buffer, true);
+    encode_data(buffer, true);
   }
 }
 
@@ -178,4 +223,5 @@ std::string Utility::getLastAddressFromXFF(const Http::HeaderMap& request_header
   return xff_address_list.back();
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

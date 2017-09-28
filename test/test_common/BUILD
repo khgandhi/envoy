@@ -3,13 +3,14 @@ licenses(["notice"])  # Apache 2
 load(
     "//bazel:envoy_build_system.bzl",
     "envoy_cc_library",
+    "envoy_basic_cc_library",
     "envoy_cc_test_library",
     "envoy_package",
 )
 
 envoy_package()
 
-cc_library(
+envoy_basic_cc_library(
     name = "printers_includes",
     hdrs = ["printers.h"],
 )
@@ -19,8 +20,12 @@ envoy_cc_test_library(
     srcs = ["environment.cc"],
     hdrs = ["environment.h"],
     deps = [
+        ":network_utility_lib",
         "//include/envoy/server:options_interface",
         "//source/common/common:assert_lib",
+        "//source/common/common:compiler_requirements_lib",
+        "//source/common/common:macros",
+        "//source/common/common:utility_lib",
         "//source/common/json:json_loader_lib",
         "//source/common/network:utility_lib",
         "//source/server:options_lib",
@@ -55,11 +60,17 @@ envoy_cc_test_library(
     name = "utility_lib",
     srcs = ["utility.cc"],
     hdrs = ["utility.h"],
+    external_deps = ["envoy_bootstrap"],
     deps = [
         "//include/envoy/buffer:buffer_interface",
+        "//include/envoy/http:codec_interface",
         "//include/envoy/network:address_interface",
         "//source/common/common:empty_string",
+        "//source/common/config:bootstrap_json_lib",
         "//source/common/http:header_map_lib",
+        "//source/common/json:json_loader_lib",
         "//source/common/network:address_lib",
+        "//source/common/network:utility_lib",
+        "//source/common/protobuf:utility_lib",
     ],
 )

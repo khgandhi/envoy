@@ -14,6 +14,7 @@ envoy_cc_library(
     hdrs = ["config_impl.h"],
     deps = [
         ":config_utility_lib",
+        ":req_header_formatter_lib",
         ":retry_state_lib",
         ":router_ratelimit_lib",
         "//include/envoy/common:optional",
@@ -24,11 +25,14 @@ envoy_cc_library(
         "//include/envoy/upstream:upstream_interface",
         "//source/common/common:assert_lib",
         "//source/common/common:empty_string",
+        "//source/common/common:hash_lib",
         "//source/common/common:utility_lib",
+        "//source/common/config:metadata_lib",
+        "//source/common/config:rds_json_lib",
+        "//source/common/config:well_known_names",
         "//source/common/http:headers_lib",
         "//source/common/http:utility_lib",
-        "//source/common/json:config_schemas_lib",
-        "//source/common/json:json_loader_lib",
+        "//source/common/protobuf:utility_lib",
     ],
 )
 
@@ -36,14 +40,14 @@ envoy_cc_library(
     name = "config_utility_lib",
     srcs = ["config_utility.cc"],
     hdrs = ["config_utility.h"],
+    external_deps = ["envoy_rds"],
     deps = [
-        "//include/envoy/json:json_object_interface",
         "//include/envoy/upstream:resource_manager_interface",
         "//source/common/common:assert_lib",
         "//source/common/common:empty_string",
+        "//source/common/config:rds_json_lib",
         "//source/common/http:headers_lib",
-        "//source/common/json:config_schemas_lib",
-        "//source/common/json:json_validator_lib",
+        "//source/common/protobuf:utility_lib",
     ],
 )
 
@@ -51,17 +55,46 @@ envoy_cc_library(
     name = "rds_lib",
     srcs = ["rds_impl.cc"],
     hdrs = ["rds_impl.h"],
+    external_deps = [
+        "envoy_filter_http_connection_manager",
+        "envoy_rds",
+    ],
     deps = [
         ":config_lib",
+        ":rds_subscription_lib",
+        "//include/envoy/config:subscription_interface",
+        "//include/envoy/http:codes_interface",
         "//include/envoy/init:init_interface",
-        "//include/envoy/json:json_object_interface",
         "//include/envoy/local_info:local_info_interface",
         "//include/envoy/router:rds_interface",
+        "//include/envoy/router:route_config_provider_manager_interface",
+        "//include/envoy/server:admin_interface",
+        "//include/envoy/singleton:instance_interface",
         "//include/envoy/thread_local:thread_local_interface",
         "//source/common/common:assert_lib",
         "//source/common/common:logger_lib",
+        "//source/common/config:rds_json_lib",
+        "//source/common/config:subscription_factory_lib",
+        "//source/common/config:utility_lib",
+        "//source/common/protobuf:utility_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "rds_subscription_lib",
+    srcs = ["rds_subscription.cc"],
+    hdrs = ["rds_subscription.h"],
+    external_deps = [
+        "envoy_filter_http_connection_manager",
+    ],
+    deps = [
+        "//include/envoy/config:subscription_interface",
+        "//source/common/common:assert_lib",
+        "//source/common/config:rds_json_lib",
+        "//source/common/config:utility_lib",
+        "//source/common/http:headers_lib",
         "//source/common/http:rest_api_fetcher_lib",
-        "//source/common/json:config_schemas_lib",
+        "//source/common/json:json_loader_lib",
     ],
 )
 
@@ -79,6 +112,7 @@ envoy_cc_library(
         "//include/envoy/upstream:upstream_interface",
         "//source/common/common:assert_lib",
         "//source/common/common:utility_lib",
+        "//source/common/grpc:common_lib",
         "//source/common/http:codes_lib",
         "//source/common/http:headers_lib",
         "//source/common/http:utility_lib",
@@ -105,6 +139,7 @@ envoy_cc_library(
         "//include/envoy/stats:stats_macros",
         "//include/envoy/upstream:cluster_manager_interface",
         "//include/envoy/upstream:upstream_interface",
+        "//source/common/buffer:watermark_buffer_lib",
         "//source/common/common:assert_lib",
         "//source/common/common:empty_string",
         "//source/common/common:enum_to_int",
@@ -128,9 +163,9 @@ envoy_cc_library(
         "//include/envoy/router:router_ratelimit_interface",
         "//source/common/common:assert_lib",
         "//source/common/common:empty_string",
+        "//source/common/config:rds_json_lib",
         "//source/common/http/filter:ratelimit_includes",
-        "//source/common/json:config_schemas_lib",
-        "//source/common/json:json_validator_lib",
+        "//source/common/protobuf:utility_lib",
     ],
 )
 
@@ -143,5 +178,16 @@ envoy_cc_library(
         "//include/envoy/upstream:cluster_manager_interface",
         "//source/common/common:assert_lib",
         "//source/common/http:headers_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "req_header_formatter_lib",
+    srcs = ["req_header_formatter.cc"],
+    hdrs = ["req_header_formatter.h"],
+    deps = [
+        "//source/common/config:rds_json_lib",
+        "//source/common/http/access_log:access_log_formatter_lib",
+        "//source/common/protobuf:utility_lib",
     ],
 )

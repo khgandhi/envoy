@@ -16,6 +16,7 @@
 #include "lightstep/carrier.h"
 #include "lightstep/tracer.h"
 
+namespace Envoy {
 namespace Tracing {
 
 #define LIGHTSTEP_TRACER_STATS(COUNTER)                                                            \
@@ -28,16 +29,20 @@ struct LightstepTracerStats {
 
 class LightStepSpan : public Span {
 public:
-  LightStepSpan(lightstep::Span& span);
+  LightStepSpan(lightstep::Span& span, lightstep::Tracer& tracer);
 
   // Tracing::Span
-  void finishSpan() override;
+  void finishSpan(SpanFinalizer& finalizer) override;
+  void setOperation(const std::string& operation) override;
   void setTag(const std::string& name, const std::string& value) override;
+  void injectContext(Http::HeaderMap& request_headers) override;
+  SpanPtr spawnChild(const Config& config, const std::string& name, SystemTime start_time) override;
 
   lightstep::SpanContext context() { return span_.context(); }
 
 private:
   lightstep::Span span_;
+  lightstep::Tracer& tracer_;
 };
 
 typedef std::unique_ptr<LightStepSpan> LightStepSpanPtr;
@@ -51,12 +56,12 @@ typedef std::unique_ptr<LightStepSpan> LightStepSpanPtr;
 class LightStepDriver : public Driver {
 public:
   LightStepDriver(const Json::Object& config, Upstream::ClusterManager& cluster_manager,
-                  Stats::Store& stats, ThreadLocal::Instance& tls, Runtime::Loader& runtime,
+                  Stats::Store& stats, ThreadLocal::SlotAllocator& tls, Runtime::Loader& runtime,
                   std::unique_ptr<lightstep::TracerOptions> options);
 
   // Tracer::TracingDriver
-  SpanPtr startSpan(Http::HeaderMap& request_headers, const std::string& operation_name,
-                    SystemTime start_time) override;
+  SpanPtr startSpan(const Config& config, Http::HeaderMap& request_headers,
+                    const std::string& operation_name, SystemTime start_time) override;
 
   Upstream::ClusterManager& clusterManager() { return cm_; }
   Upstream::ClusterInfoConstSharedPtr cluster() { return cluster_; }
@@ -67,8 +72,6 @@ private:
   struct TlsLightStepTracer : ThreadLocal::ThreadLocalObject {
     TlsLightStepTracer(lightstep::Tracer tracer, LightStepDriver& driver);
 
-    void shutdown() override { tracer_.reset(); }
-
     std::unique_ptr<lightstep::Tracer> tracer_;
     LightStepDriver& driver_;
   };
@@ -76,10 +79,9 @@ private:
   Upstream::ClusterManager& cm_;
   Upstream::ClusterInfoConstSharedPtr cluster_;
   LightstepTracerStats tracer_stats_;
-  ThreadLocal::Instance& tls_;
+  ThreadLocal::SlotPtr tls_;
   Runtime::Loader& runtime_;
   std::unique_ptr<lightstep::TracerOptions> options_;
-  uint32_t tls_slot_;
 };
 
 class LightStepRecorder : public lightstep::Recorder, Http::AsyncClient::Callbacks {
@@ -109,3 +111,4 @@ private:
 };
 
 } // Tracing
+} // namespace Envoy

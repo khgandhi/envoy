@@ -10,66 +10,58 @@
 
 #include "common/common/assert.h"
 #include "common/common/utility.h"
+#include "common/config/utility.h"
 #include "common/http/access_log/access_log_formatter.h"
 #include "common/http/header_map_impl.h"
 #include "common/http/headers.h"
 #include "common/http/utility.h"
-#include "common/json/json_loader.h"
 #include "common/runtime/uuid_util.h"
 #include "common/tracing/http_tracer_impl.h"
 
+namespace Envoy {
 namespace Http {
 namespace AccessLog {
 
-FilterImpl::FilterImpl(Json::Object& json, Runtime::Loader& runtime)
-    : value_(json.getInteger("value")), runtime_(runtime) {
-  std::string op = json.getString("op");
-  if (op == ">=") {
-    op_ = FilterOperation::GreaterEqual;
-  } else {
-    ASSERT(op == "=");
-    op_ = FilterOperation::Equal;
+ComparisonFilter::ComparisonFilter(const envoy::api::v2::filter::ComparisonFilter& config,
+                                   Runtime::Loader& runtime)
+    : config_(config), runtime_(runtime) {}
+
+bool ComparisonFilter::compareAgainstValue(uint64_t lhs) {
+  uint64_t value = config_.value().default_value();
+
+  if (!config_.value().runtime_key().empty()) {
+    value = runtime_.snapshot().getInteger(config_.value().runtime_key(), value);
   }
 
-  if (json.hasObject("runtime_key")) {
-    runtime_key_.value(json.getString("runtime_key"));
-  }
-}
-
-bool FilterImpl::compareAgainstValue(uint64_t lhs) {
-  uint64_t value = value_;
-
-  if (runtime_key_.valid()) {
-    value = runtime_.snapshot().getInteger(runtime_key_.value(), value);
-  }
-
-  switch (op_) {
-  case FilterOperation::GreaterEqual:
+  switch (config_.op()) {
+  case envoy::api::v2::filter::ComparisonFilter::GE:
     return lhs >= value;
-  case FilterOperation::Equal:
+  case envoy::api::v2::filter::ComparisonFilter::EQ:
     return lhs == value;
+  default:
+    NOT_REACHED;
   }
-
-  NOT_REACHED;
 }
 
-FilterPtr FilterImpl::fromJson(Json::Object& json, Runtime::Loader& runtime) {
-  std::string type = json.getString("type");
-  if (type == "status_code") {
-    return FilterPtr{new StatusCodeFilter(json, runtime)};
-  } else if (type == "duration") {
-    return FilterPtr{new DurationFilter(json, runtime)};
-  } else if (type == "runtime") {
-    return FilterPtr{new RuntimeFilter(json, runtime)};
-  } else if (type == "logical_or") {
-    return FilterPtr{new OrFilter(json, runtime)};
-  } else if (type == "logical_and") {
-    return FilterPtr{new AndFilter(json, runtime)};
-  } else if (type == "not_healthcheck") {
+FilterPtr FilterFactory::fromProto(const envoy::api::v2::filter::AccessLogFilter& config,
+                                   Runtime::Loader& runtime) {
+  switch (config.filter_specifier_case()) {
+  case envoy::api::v2::filter::AccessLogFilter::kStatusCodeFilter:
+    return FilterPtr{new StatusCodeFilter(config.status_code_filter(), runtime)};
+  case envoy::api::v2::filter::AccessLogFilter::kDurationFilter:
+    return FilterPtr{new DurationFilter(config.duration_filter(), runtime)};
+  case envoy::api::v2::filter::AccessLogFilter::kNotHealthCheckFilter:
     return FilterPtr{new NotHealthCheckFilter()};
-  } else {
-    ASSERT(type == "traceable_request");
+  case envoy::api::v2::filter::AccessLogFilter::kTraceableFilter:
     return FilterPtr{new TraceableRequestFilter()};
+  case envoy::api::v2::filter::AccessLogFilter::kRuntimeFilter:
+    return FilterPtr{new RuntimeFilter(config.runtime_filter(), runtime)};
+  case envoy::api::v2::filter::AccessLogFilter::kAndFilter:
+    return FilterPtr{new AndFilter(config.and_filter(), runtime)};
+  case envoy::api::v2::filter::AccessLogFilter::kOrFilter:
+    return FilterPtr{new OrFilter(config.or_filter(), runtime)};
+  default:
+    NOT_REACHED;
   }
 }
 
@@ -88,11 +80,13 @@ bool StatusCodeFilter::evaluate(const RequestInfo& info, const HeaderMap&) {
 }
 
 bool DurationFilter::evaluate(const RequestInfo& info, const HeaderMap&) {
-  return compareAgainstValue(info.duration().count());
+  return compareAgainstValue(
+      std::chrono::duration_cast<std::chrono::milliseconds>(info.duration()).count());
 }
 
-RuntimeFilter::RuntimeFilter(Json::Object& json, Runtime::Loader& runtime)
-    : runtime_(runtime), runtime_key_(json.getString("key")) {}
+RuntimeFilter::RuntimeFilter(const envoy::api::v2::filter::RuntimeFilter& config,
+                             Runtime::Loader& runtime)
+    : runtime_(runtime), runtime_key_(config.runtime_key()) {}
 
 bool RuntimeFilter::evaluate(const RequestInfo&, const HeaderMap& request_header) {
   const HeaderEntry* uuid = request_header.RequestId();
@@ -107,17 +101,19 @@ bool RuntimeFilter::evaluate(const RequestInfo&, const HeaderMap& request_header
   }
 }
 
-OperatorFilter::OperatorFilter(const Json::Object& json, Runtime::Loader& runtime) {
-  for (Json::ObjectPtr& filter : json.getObjectArray("filters")) {
-    filters_.emplace_back(FilterImpl::fromJson(*filter, runtime));
+OperatorFilter::OperatorFilter(
+    const Protobuf::RepeatedPtrField<envoy::api::v2::filter::AccessLogFilter>& configs,
+    Runtime::Loader& runtime) {
+  for (const auto& config : configs) {
+    filters_.emplace_back(FilterFactory::fromProto(config, runtime));
   }
 }
 
-OrFilter::OrFilter(const Json::Object& json, Runtime::Loader& runtime)
-    : OperatorFilter(json, runtime) {}
+OrFilter::OrFilter(const envoy::api::v2::filter::OrFilter& config, Runtime::Loader& runtime)
+    : OperatorFilter(config.filters(), runtime) {}
 
-AndFilter::AndFilter(const Json::Object& json, Runtime::Loader& runtime)
-    : OperatorFilter(json, runtime) {}
+AndFilter::AndFilter(const envoy::api::v2::filter::AndFilter& config, Runtime::Loader& runtime)
+    : OperatorFilter(config.filters(), runtime) {}
 
 bool OrFilter::evaluate(const RequestInfo& info, const HeaderMap& request_headers) {
   bool result = false;
@@ -149,35 +145,30 @@ bool NotHealthCheckFilter::evaluate(const RequestInfo& info, const HeaderMap&) {
   return !info.healthCheck();
 }
 
-InstanceImpl::InstanceImpl(const std::string& access_log_path, FilterPtr&& filter,
-                           FormatterPtr&& formatter, ::AccessLog::AccessLogManager& log_manager)
+InstanceSharedPtr AccessLogFactory::fromProto(const envoy::api::v2::filter::AccessLog& config,
+                                              Server::Configuration::FactoryContext& context) {
+  FilterPtr filter;
+  if (config.has_filter()) {
+    filter = FilterFactory::fromProto(config.filter(), context.runtime());
+  }
+
+  auto& factory =
+      Config::Utility::getAndCheckFactory<Server::Configuration::AccessLogInstanceFactory>(
+          config.name());
+  ProtobufTypes::MessagePtr message = Config::Utility::translateToFactoryConfig(config, factory);
+
+  return factory.createAccessLogInstance(*message, std::move(filter), context);
+}
+
+FileAccessLog::FileAccessLog(const std::string& access_log_path, FilterPtr&& filter,
+                             FormatterPtr&& formatter,
+                             Envoy::AccessLog::AccessLogManager& log_manager)
     : filter_(std::move(filter)), formatter_(std::move(formatter)) {
   log_file_ = log_manager.createAccessLog(access_log_path);
 }
 
-InstanceSharedPtr InstanceImpl::fromJson(Json::Object& json, Runtime::Loader& runtime,
-                                         ::AccessLog::AccessLogManager& log_manager) {
-  std::string access_log_path = json.getString("path");
-
-  FilterPtr filter;
-  if (json.hasObject("filter")) {
-    Json::ObjectPtr filterObject = json.getObject("filter");
-    filter = FilterImpl::fromJson(*filterObject, runtime);
-  }
-
-  FormatterPtr formatter;
-  if (json.hasObject("format")) {
-    formatter.reset(new FormatterImpl(json.getString("format")));
-  } else {
-    formatter = AccessLogFormatUtils::defaultAccessLogFormatter();
-  }
-
-  return InstanceSharedPtr{
-      new InstanceImpl(access_log_path, std::move(filter), std::move(formatter), log_manager)};
-}
-
-void InstanceImpl::log(const HeaderMap* request_headers, const HeaderMap* response_headers,
-                       const RequestInfo& request_info) {
+void FileAccessLog::log(const HeaderMap* request_headers, const HeaderMap* response_headers,
+                        const RequestInfo& request_info) {
   static HeaderMapImpl empty_headers;
   if (!request_headers) {
     request_headers = &empty_headers;
@@ -197,5 +188,6 @@ void InstanceImpl::log(const HeaderMap* request_headers, const HeaderMap* respon
   log_file_->write(access_log_line);
 }
 
-} // AccessLog
-} // Http
+} // namespace AccessLog
+} // namespace Http
+} // namespace Envoy

@@ -16,22 +16,38 @@
 
 #include "common/common/enum_to_int.h"
 #include "common/common/utility.h"
+#include "common/config/protocol_json.h"
+#include "common/config/tls_context_json.h"
 #include "common/http/utility.h"
-#include "common/json/config_schemas.h"
-#include "common/json/json_loader.h"
 #include "common/network/address_impl.h"
 #include "common/network/utility.h"
+#include "common/protobuf/protobuf.h"
+#include "common/protobuf/utility.h"
 #include "common/ssl/connection_impl.h"
 #include "common/ssl/context_config_impl.h"
+#include "common/upstream/eds.h"
 #include "common/upstream/health_checker_impl.h"
 #include "common/upstream/logical_dns_cluster.h"
-#include "common/upstream/sds.h"
+#include "common/upstream/original_dst_cluster.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 namespace Upstream {
+namespace {
 
-Outlier::DetectorHostSinkNullImpl HostDescriptionImpl::null_outlier_detector_;
+const Network::Address::InstanceConstSharedPtr
+getSourceAddress(const envoy::api::v2::Cluster& cluster,
+                 const Network::Address::InstanceConstSharedPtr source_address) {
+  // The source address from cluster config takes precedence.
+  if (cluster.upstream_bind_config().has_source_address()) {
+    return Network::Utility::fromProtoSocketAddress(
+        cluster.upstream_bind_config().source_address());
+  }
+  // If there's no source address in the cluster config, use any default from the bootstrap proto.
+  return source_address;
+}
+} // namespace
 
 Host::CreateConnectionData HostImpl::createConnection(Event::Dispatcher& dispatcher) const {
   return {createConnection(dispatcher, *cluster_, address_), shared_from_this()};
@@ -41,110 +57,139 @@ Network::ClientConnectionPtr
 HostImpl::createConnection(Event::Dispatcher& dispatcher, const ClusterInfo& cluster,
                            Network::Address::InstanceConstSharedPtr address) {
   Network::ClientConnectionPtr connection =
-      cluster.sslContext() ? dispatcher.createSslClientConnection(*cluster.sslContext(), address)
-                           : dispatcher.createClientConnection(address);
-  connection->setReadBufferLimit(cluster.perConnectionBufferLimitBytes());
+      cluster.sslContext() ? dispatcher.createSslClientConnection(*cluster.sslContext(), address,
+                                                                  cluster.sourceAddress())
+                           : dispatcher.createClientConnection(address, cluster.sourceAddress());
+  connection->setBufferLimits(cluster.perConnectionBufferLimitBytes());
   return connection;
 }
 
 void HostImpl::weight(uint32_t new_weight) { weight_ = std::max(1U, std::min(100U, new_weight)); }
 
-void HostSetImpl::addMemberUpdateCb(MemberUpdateCb callback) const {
-  callbacks_.emplace_back(callback);
-}
-
 ClusterStats ClusterInfoImpl::generateStats(Stats::Scope& scope) {
   return {ALL_CLUSTER_STATS(POOL_COUNTER(scope), POOL_GAUGE(scope), POOL_TIMER(scope))};
 }
 
-void HostSetImpl::runUpdateCallbacks(const std::vector<HostSharedPtr>& hosts_added,
-                                     const std::vector<HostSharedPtr>& hosts_removed) {
-  for (MemberUpdateCb& callback : callbacks_) {
-    callback(hosts_added, hosts_removed);
-  }
-}
-
-ClusterInfoImpl::ClusterInfoImpl(const Json::Object& config, Runtime::Loader& runtime,
-                                 Stats::Store& stats, Ssl::ContextManager& ssl_context_manager)
-    : runtime_(runtime), name_(config.getString("name")),
-      max_requests_per_connection_(config.getInteger("max_requests_per_connection", 0)),
-      connect_timeout_(std::chrono::milliseconds(config.getInteger("connect_timeout_ms"))),
+ClusterInfoImpl::ClusterInfoImpl(const envoy::api::v2::Cluster& config,
+                                 const Network::Address::InstanceConstSharedPtr source_address,
+                                 Runtime::Loader& runtime, Stats::Store& stats,
+                                 Ssl::ContextManager& ssl_context_manager, bool added_via_api)
+    : runtime_(runtime), name_(config.name()),
+      max_requests_per_connection_(
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, max_requests_per_connection, 0)),
+      connect_timeout_(
+          std::chrono::milliseconds(PROTOBUF_GET_MS_REQUIRED(config, connect_timeout))),
       per_connection_buffer_limit_bytes_(
-          config.getInteger("per_connection_buffer_limit_bytes", 1024 * 1024)),
+          PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, per_connection_buffer_limit_bytes, 1024 * 1024)),
       stats_scope_(stats.createScope(fmt::format("cluster.{}.", name_))),
       stats_(generateStats(*stats_scope_)), features_(parseFeatures(config)),
-      http_codec_options_(Http::Utility::parseCodecOptions(config)),
+      http2_settings_(Http::Utility::parseHttp2Settings(config.http2_protocol_options())),
       resource_managers_(config, runtime, name_),
-      maintenance_mode_runtime_key_(fmt::format("upstream.maintenance_mode.{}", name_)) {
-
+      maintenance_mode_runtime_key_(fmt::format("upstream.maintenance_mode.{}", name_)),
+      source_address_(getSourceAddress(config, source_address)), added_via_api_(added_via_api) {
   ssl_ctx_ = nullptr;
-  if (config.hasObject("ssl_context")) {
-    Ssl::ContextConfigImpl context_config(*config.getObject("ssl_context"));
+  if (config.has_tls_context()) {
+    Ssl::ClientContextConfigImpl context_config(config.tls_context());
     ssl_ctx_ = ssl_context_manager.createSslClientContext(*stats_scope_, context_config);
   }
 
-  std::string string_lb_type = config.getString("lb_type");
-  if (string_lb_type == "round_robin") {
+  switch (config.lb_policy()) {
+  case envoy::api::v2::Cluster::ROUND_ROBIN:
     lb_type_ = LoadBalancerType::RoundRobin;
-  } else if (string_lb_type == "least_request") {
+    break;
+  case envoy::api::v2::Cluster::LEAST_REQUEST:
     lb_type_ = LoadBalancerType::LeastRequest;
-  } else if (string_lb_type == "random") {
+    break;
+  case envoy::api::v2::Cluster::RANDOM:
     lb_type_ = LoadBalancerType::Random;
-  } else if (string_lb_type == "ring_hash") {
+    break;
+  case envoy::api::v2::Cluster::RING_HASH:
     lb_type_ = LoadBalancerType::RingHash;
-  } else {
-    throw EnvoyException(fmt::format("cluster: unknown LB type '{}'", string_lb_type));
+    break;
+  case envoy::api::v2::Cluster::ORIGINAL_DST_LB:
+    if (config.type() != envoy::api::v2::Cluster::ORIGINAL_DST) {
+      throw EnvoyException(fmt::format(
+          "cluster: LB type 'original_dst_lb' may only be used with cluser type 'original_dst'"));
+    }
+    lb_type_ = LoadBalancerType::OriginalDst;
+    break;
+  default:
+    NOT_REACHED;
   }
 }
 
 const HostListsConstSharedPtr ClusterImplBase::empty_host_lists_{
     new std::vector<std::vector<HostSharedPtr>>()};
 
-ClusterPtr ClusterImplBase::create(const Json::Object& cluster, ClusterManager& cm,
-                                   Stats::Store& stats, ThreadLocal::Instance& tls,
-                                   Network::DnsResolver& dns_resolver,
-                                   Ssl::ContextManager& ssl_context_manager,
-                                   Runtime::Loader& runtime, Runtime::RandomGenerator& random,
-                                   Event::Dispatcher& dispatcher,
-                                   const Optional<SdsConfig>& sds_config,
-                                   const LocalInfo::LocalInfo& local_info,
-                                   Outlier::EventLoggerSharedPtr outlier_event_logger) {
-
-  cluster.validateSchema(Json::Schema::CLUSTER_SCHEMA);
-
+ClusterSharedPtr ClusterImplBase::create(const envoy::api::v2::Cluster& cluster, ClusterManager& cm,
+                                         Stats::Store& stats, ThreadLocal::Instance& tls,
+                                         Network::DnsResolverSharedPtr dns_resolver,
+                                         Ssl::ContextManager& ssl_context_manager,
+                                         Runtime::Loader& runtime, Runtime::RandomGenerator& random,
+                                         Event::Dispatcher& dispatcher,
+                                         const LocalInfo::LocalInfo& local_info,
+                                         Outlier::EventLoggerSharedPtr outlier_event_logger,
+                                         bool added_via_api) {
   std::unique_ptr<ClusterImplBase> new_cluster;
-  std::string string_type = cluster.getString("type");
-  if (string_type == "static") {
-    new_cluster.reset(new StaticClusterImpl(cluster, runtime, stats, ssl_context_manager));
-  } else if (string_type == "strict_dns") {
+
+  // We make this a shared pointer to deal with the distinct ownership
+  // scenarios that can exist: in one case, we pass in the "default"
+  // DNS resolver that is owned by the Server::Instance. In the case
+  // where 'dns_resolvers' is specified, we have per-cluster DNS
+  // resolvers that are created here but ownership resides with
+  // StrictDnsClusterImpl/LogicalDnsCluster.
+  auto selected_dns_resolver = dns_resolver;
+  if (!cluster.dns_resolvers().empty()) {
+    const auto& resolver_addrs = cluster.dns_resolvers();
+    std::vector<Network::Address::InstanceConstSharedPtr> resolvers;
+    resolvers.reserve(resolver_addrs.size());
+    for (const auto& resolver_addr : resolver_addrs) {
+      resolvers.push_back(Network::Utility::fromProtoAddress(resolver_addr));
+    }
+    selected_dns_resolver = dispatcher.createDnsResolver(resolvers);
+  }
+
+  switch (cluster.type()) {
+  case envoy::api::v2::Cluster::STATIC:
+    new_cluster.reset(
+        new StaticClusterImpl(cluster, runtime, stats, ssl_context_manager, cm, added_via_api));
+    break;
+  case envoy::api::v2::Cluster::STRICT_DNS:
     new_cluster.reset(new StrictDnsClusterImpl(cluster, runtime, stats, ssl_context_manager,
-                                               dns_resolver, dispatcher));
-  } else if (string_type == "logical_dns") {
+                                               selected_dns_resolver, cm, dispatcher,
+                                               added_via_api));
+    break;
+  case envoy::api::v2::Cluster::LOGICAL_DNS:
     new_cluster.reset(new LogicalDnsCluster(cluster, runtime, stats, ssl_context_manager,
-                                            dns_resolver, tls, dispatcher));
-  } else if (string_type == "sds") {
-    if (!sds_config.valid()) {
+                                            selected_dns_resolver, tls, cm, dispatcher,
+                                            added_via_api));
+    break;
+  case envoy::api::v2::Cluster::ORIGINAL_DST:
+    if (cluster.lb_policy() != envoy::api::v2::Cluster::ORIGINAL_DST_LB) {
+      throw EnvoyException(fmt::format(
+          "cluster: cluster type 'original_dst' may only be used with LB type 'original_dst_lb'"));
+    }
+    new_cluster.reset(new OriginalDstCluster(cluster, runtime, stats, ssl_context_manager, cm,
+                                             dispatcher, added_via_api));
+    break;
+  case envoy::api::v2::Cluster::EDS:
+    if (!cluster.has_eds_cluster_config()) {
       throw EnvoyException("cannot create an sds cluster without an sds config");
     }
 
-    new_cluster.reset(new SdsClusterImpl(cluster, runtime, stats, ssl_context_manager,
-                                         sds_config.value(), local_info, cm, dispatcher, random));
-  } else {
-    throw EnvoyException(fmt::format("cluster: unknown cluster type '{}'", string_type));
+    // We map SDS to EDS, since EDS provides backwards compatibility with SDS.
+    new_cluster.reset(new EdsClusterImpl(cluster, runtime, stats, ssl_context_manager, local_info,
+                                         cm, dispatcher, random, added_via_api));
+    break;
+  default:
+    NOT_REACHED;
   }
 
-  if (cluster.hasObject("health_check")) {
-    Json::ObjectPtr health_check_config = cluster.getObject("health_check");
-    std::string hc_type = health_check_config->getString("type");
-    if (hc_type == "http") {
-      new_cluster->setHealthChecker(HealthCheckerPtr{new ProdHttpHealthCheckerImpl(
-          *new_cluster, *health_check_config, dispatcher, runtime, random)});
-    } else if (hc_type == "tcp") {
-      new_cluster->setHealthChecker(HealthCheckerPtr{new TcpHealthCheckerImpl(
-          *new_cluster, *health_check_config, dispatcher, runtime, random)});
-    } else {
-      throw EnvoyException(fmt::format("cluster: unknown health check type '{}'", hc_type));
-    }
+  if (!cluster.health_checks().empty()) {
+    // TODO(htuch): Need to support multiple health checks in v2.
+    ASSERT(cluster.health_checks().size() == 1);
+    new_cluster->setHealthChecker(HealthCheckerFactory::create(
+        cluster.health_checks()[0], *new_cluster, runtime, random, dispatcher));
   }
 
   new_cluster->setOutlierDetector(Outlier::DetectorImplFactory::createForCluster(
@@ -152,9 +197,12 @@ ClusterPtr ClusterImplBase::create(const Json::Object& cluster, ClusterManager& 
   return std::move(new_cluster);
 }
 
-ClusterImplBase::ClusterImplBase(const Json::Object& config, Runtime::Loader& runtime,
-                                 Stats::Store& stats, Ssl::ContextManager& ssl_context_manager)
-    : runtime_(runtime), info_(new ClusterInfoImpl(config, runtime, stats, ssl_context_manager)) {}
+ClusterImplBase::ClusterImplBase(const envoy::api::v2::Cluster& cluster,
+                                 const Network::Address::InstanceConstSharedPtr source_address,
+                                 Runtime::Loader& runtime, Stats::Store& stats,
+                                 Ssl::ContextManager& ssl_context_manager, bool added_via_api)
+    : runtime_(runtime), info_(new ClusterInfoImpl(cluster, source_address, runtime, stats,
+                                                   ssl_context_manager, added_via_api)) {}
 
 HostVectorConstSharedPtr
 ClusterImplBase::createHealthyHostList(const std::vector<HostSharedPtr>& hosts) {
@@ -189,14 +237,11 @@ bool ClusterInfoImpl::maintenanceMode() const {
   return runtime_.snapshot().featureEnabled(maintenance_mode_runtime_key_, 0);
 }
 
-uint64_t ClusterInfoImpl::parseFeatures(const Json::Object& config) {
+uint64_t ClusterInfoImpl::parseFeatures(const envoy::api::v2::Cluster& config) {
   uint64_t features = 0;
-  for (const std::string& feature : StringUtil::split(config.getString("features", ""), ',')) {
-    ASSERT(feature == "http2");
-    UNREFERENCED_PARAMETER(feature);
+  if (config.has_http2_protocol_options()) {
     features |= Features::HTTP2;
   }
-
   return features;
 }
 
@@ -216,9 +261,9 @@ void ClusterImplBase::runUpdateCallbacks(const std::vector<HostSharedPtr>& hosts
   HostSetImpl::runUpdateCallbacks(hosts_added, hosts_removed);
 }
 
-void ClusterImplBase::setHealthChecker(HealthCheckerPtr&& health_checker) {
+void ClusterImplBase::setHealthChecker(const HealthCheckerSharedPtr& health_checker) {
   ASSERT(!health_checker_);
-  health_checker_ = std::move(health_checker);
+  health_checker_ = health_checker;
   health_checker_->start();
   health_checker_->addHostCheckCompleteCb([this](HostSharedPtr, bool changed_state) -> void {
     // If we get a health check completion that resulted in a state change, signal to
@@ -229,12 +274,12 @@ void ClusterImplBase::setHealthChecker(HealthCheckerPtr&& health_checker) {
   });
 }
 
-void ClusterImplBase::setOutlierDetector(Outlier::DetectorSharedPtr outlier_detector) {
+void ClusterImplBase::setOutlierDetector(const Outlier::DetectorSharedPtr& outlier_detector) {
   if (!outlier_detector) {
     return;
   }
 
-  outlier_detector_ = std::move(outlier_detector);
+  outlier_detector_ = outlier_detector;
   outlier_detector_->addChangedStateCb([this](HostSharedPtr) -> void { reloadHealthyHosts(); });
 }
 
@@ -246,41 +291,54 @@ void ClusterImplBase::reloadHealthyHosts() {
               createHealthyHostLists(hostsPerZone()), {}, {});
 }
 
-ClusterInfoImpl::ResourceManagers::ResourceManagers(const Json::Object& config,
+ClusterInfoImpl::ResourceManagers::ResourceManagers(const envoy::api::v2::Cluster& config,
                                                     Runtime::Loader& runtime,
                                                     const std::string& cluster_name) {
-  managers_[enumToInt(ResourcePriority::Default)] = load(config, runtime, cluster_name, "default");
-  managers_[enumToInt(ResourcePriority::High)] = load(config, runtime, cluster_name, "high");
+  managers_[enumToInt(ResourcePriority::Default)] =
+      load(config, runtime, cluster_name, envoy::api::v2::RoutingPriority::DEFAULT);
+  managers_[enumToInt(ResourcePriority::High)] =
+      load(config, runtime, cluster_name, envoy::api::v2::RoutingPriority::HIGH);
 }
 
-ResourceManagerImplPtr ClusterInfoImpl::ResourceManagers::load(const Json::Object& config,
-                                                               Runtime::Loader& runtime,
-                                                               const std::string& cluster_name,
-                                                               const std::string& priority) {
+ResourceManagerImplPtr
+ClusterInfoImpl::ResourceManagers::load(const envoy::api::v2::Cluster& config,
+                                        Runtime::Loader& runtime, const std::string& cluster_name,
+                                        const envoy::api::v2::RoutingPriority& priority) {
   uint64_t max_connections = 1024;
   uint64_t max_pending_requests = 1024;
   uint64_t max_requests = 1024;
   uint64_t max_retries = 3;
-  std::string runtime_prefix = fmt::format("circuit_breakers.{}.{}.", cluster_name, priority);
+  const std::string runtime_prefix = fmt::format("circuit_breakers.{}.{}.", cluster_name, priority);
 
-  Json::ObjectPtr settings = config.getObject("circuit_breakers", true)->getObject(priority, true);
-  max_connections = settings->getInteger("max_connections", max_connections);
-  max_pending_requests = settings->getInteger("max_pending_requests", max_pending_requests);
-  max_requests = settings->getInteger("max_requests", max_requests);
-  max_retries = settings->getInteger("max_retries", max_retries);
-
+  const auto& thresholds = config.circuit_breakers().thresholds();
+  const auto it =
+      std::find_if(thresholds.cbegin(), thresholds.cend(),
+                   [priority](const envoy::api::v2::CircuitBreakers::Thresholds& threshold) {
+                     return threshold.priority() == priority;
+                   });
+  if (it != thresholds.cend()) {
+    max_connections = PROTOBUF_GET_WRAPPED_OR_DEFAULT(*it, max_connections, max_connections);
+    max_pending_requests =
+        PROTOBUF_GET_WRAPPED_OR_DEFAULT(*it, max_pending_requests, max_pending_requests);
+    max_requests = PROTOBUF_GET_WRAPPED_OR_DEFAULT(*it, max_requests, max_requests);
+    max_retries = PROTOBUF_GET_WRAPPED_OR_DEFAULT(*it, max_retries, max_retries);
+  }
   return ResourceManagerImplPtr{new ResourceManagerImpl(
       runtime, runtime_prefix, max_connections, max_pending_requests, max_requests, max_retries)};
 }
 
-StaticClusterImpl::StaticClusterImpl(const Json::Object& config, Runtime::Loader& runtime,
-                                     Stats::Store& stats, Ssl::ContextManager& ssl_context_manager)
-    : ClusterImplBase(config, runtime, stats, ssl_context_manager) {
-  std::vector<Json::ObjectPtr> hosts_json = config.getObjectArray("hosts");
+StaticClusterImpl::StaticClusterImpl(const envoy::api::v2::Cluster& cluster,
+                                     Runtime::Loader& runtime, Stats::Store& stats,
+                                     Ssl::ContextManager& ssl_context_manager, ClusterManager& cm,
+                                     bool added_via_api)
+    : ClusterImplBase(cluster, cm.sourceAddress(), runtime, stats, ssl_context_manager,
+                      added_via_api) {
   HostVectorSharedPtr new_hosts(new std::vector<HostSharedPtr>());
-  for (Json::ObjectPtr& host : hosts_json) {
-    new_hosts->emplace_back(HostSharedPtr{new HostImpl(
-        info_, "", Network::Utility::resolveUrl(host->getString("url")), false, 1, "")});
+  for (const auto& host : cluster.hosts()) {
+    new_hosts->emplace_back(
+        HostSharedPtr{new HostImpl(info_, "", Network::Utility::fromProtoAddress(host),
+                                   envoy::api::v2::Metadata::default_instance(), 1,
+                                   envoy::api::v2::Locality().default_instance())});
   }
 
   updateHosts(new_hosts, createHealthyHostList(*new_hosts), empty_host_lists_, empty_host_lists_,
@@ -301,7 +359,7 @@ bool BaseDynamicClusterImpl::updateDynamicHostList(const std::vector<HostSharedP
   // SDS implementation could do the same thing.
   std::unordered_set<std::string> host_addresses;
   std::vector<HostSharedPtr> final_hosts;
-  for (HostSharedPtr host : new_hosts) {
+  for (const HostSharedPtr& host : new_hosts) {
     if (host_addresses.count(host->address()->asString())) {
       continue;
     }
@@ -370,17 +428,38 @@ bool BaseDynamicClusterImpl::updateDynamicHostList(const std::vector<HostSharedP
   }
 }
 
-StrictDnsClusterImpl::StrictDnsClusterImpl(const Json::Object& config, Runtime::Loader& runtime,
-                                           Stats::Store& stats,
+StrictDnsClusterImpl::StrictDnsClusterImpl(const envoy::api::v2::Cluster& cluster,
+                                           Runtime::Loader& runtime, Stats::Store& stats,
                                            Ssl::ContextManager& ssl_context_manager,
-                                           Network::DnsResolver& dns_resolver,
-                                           Event::Dispatcher& dispatcher)
-    : BaseDynamicClusterImpl(config, runtime, stats, ssl_context_manager),
-      dns_resolver_(dns_resolver), dns_refresh_rate_ms_(std::chrono::milliseconds(
-                                       config.getInteger("dns_refresh_rate_ms", 5000))) {
-  for (Json::ObjectPtr& host : config.getObjectArray("hosts")) {
-    resolve_targets_.emplace_back(new ResolveTarget(*this, dispatcher, host->getString("url")));
+                                           Network::DnsResolverSharedPtr dns_resolver,
+                                           ClusterManager& cm, Event::Dispatcher& dispatcher,
+                                           bool added_via_api)
+    : BaseDynamicClusterImpl(cluster, cm.sourceAddress(), runtime, stats, ssl_context_manager,
+                             added_via_api),
+      dns_resolver_(dns_resolver),
+      dns_refresh_rate_ms_(
+          std::chrono::milliseconds(PROTOBUF_GET_MS_OR_DEFAULT(cluster, dns_refresh_rate, 5000))) {
+  switch (cluster.dns_lookup_family()) {
+  case envoy::api::v2::Cluster::V6_ONLY:
+    dns_lookup_family_ = Network::DnsLookupFamily::V6Only;
+    break;
+  case envoy::api::v2::Cluster::V4_ONLY:
+    dns_lookup_family_ = Network::DnsLookupFamily::V4Only;
+    break;
+  case envoy::api::v2::Cluster::AUTO:
+    dns_lookup_family_ = Network::DnsLookupFamily::Auto;
+    break;
+  default:
+    NOT_REACHED;
   }
+
+  for (const auto& host : cluster.hosts()) {
+    resolve_targets_.emplace_back(
+        new ResolveTarget(*this, dispatcher,
+                          fmt::format("tcp://{}:{}", host.socket_address().address(),
+                                      host.socket_address().port_value())));
+  }
+
   // We have to first construct resolve_targets_ before invoking startResolve(),
   // since startResolve() might resolve immediately and relies on
   // resolve_targets_ indirectly for performing host updates on resolution.
@@ -417,32 +496,32 @@ StrictDnsClusterImpl::ResolveTarget::~ResolveTarget() {
 }
 
 void StrictDnsClusterImpl::ResolveTarget::startResolve() {
-  log_debug("starting async DNS resolution for {}", dns_address_);
+  ENVOY_LOG(debug, "starting async DNS resolution for {}", dns_address_);
   parent_.info_->stats().update_attempt_.inc();
 
-  active_query_ = parent_.dns_resolver_.resolve(
-      dns_address_,
+  active_query_ = parent_.dns_resolver_->resolve(
+      dns_address_, parent_.dns_lookup_family_,
       [this](std::list<Network::Address::InstanceConstSharedPtr>&& address_list) -> void {
         active_query_ = nullptr;
-        log_debug("async DNS resolution complete for {}", dns_address_);
+        ENVOY_LOG(debug, "async DNS resolution complete for {}", dns_address_);
         parent_.info_->stats().update_success_.inc();
 
         std::vector<HostSharedPtr> new_hosts;
-        for (Network::Address::InstanceConstSharedPtr address : address_list) {
+        for (const Network::Address::InstanceConstSharedPtr& address : address_list) {
           // TODO(mattklein123): Currently the DNS interface does not consider port. We need to make
           // a new address that has port in it. We need to both support IPv6 as well as potentially
           // move port handling into the DNS interface itself, which would work better for SRV.
-          new_hosts.emplace_back(new HostImpl(
-              parent_.info_, dns_address_,
-              Network::Address::InstanceConstSharedPtr{
-                  new Network::Address::Ipv4Instance(address->ip()->addressAsString(), port_)},
-              false, 1, ""));
+          ASSERT(address != nullptr);
+          new_hosts.emplace_back(new HostImpl(parent_.info_, dns_address_,
+                                              Network::Utility::getAddressWithPort(*address, port_),
+                                              envoy::api::v2::Metadata::default_instance(), 1,
+                                              envoy::api::v2::Locality().default_instance()));
         }
 
         std::vector<HostSharedPtr> hosts_added;
         std::vector<HostSharedPtr> hosts_removed;
         if (parent_.updateDynamicHostList(new_hosts, hosts_, hosts_added, hosts_removed, false)) {
-          log_debug("DNS hosts have changed for {}", dns_address_);
+          ENVOY_LOG(debug, "DNS hosts have changed for {}", dns_address_);
           parent_.updateAllHosts(hosts_added, hosts_removed);
         }
 
@@ -460,4 +539,5 @@ void StrictDnsClusterImpl::ResolveTarget::startResolve() {
       });
 }
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

@@ -17,6 +17,7 @@
 #include "common/network/filter_impl.h"
 #include "common/redis/codec_impl.h"
 
+namespace Envoy {
 namespace Redis {
 namespace ConnPool {
 
@@ -81,7 +82,9 @@ private:
   void onRespValue(RespValuePtr&& value) override;
 
   // Network::ConnectionCallbacks
-  void onEvent(uint32_t events) override;
+  void onEvent(Network::ConnectionEvent event) override;
+  void onAboveWriteBufferHighWatermark() override {}
+  void onBelowWriteBufferLowWatermark() override {}
 
   Upstream::HostConstSharedPtr host_;
   Network::ClientConnectionPtr connection_;
@@ -109,7 +112,7 @@ private:
 class InstanceImpl : public Instance {
 public:
   InstanceImpl(const std::string& cluster_name, Upstream::ClusterManager& cm,
-               ClientFactory& client_factory, ThreadLocal::Instance& tls,
+               ClientFactory& client_factory, ThreadLocal::SlotAllocator& tls,
                const Json::Object& config);
 
   // Redis::ConnPool::Instance
@@ -119,12 +122,13 @@ public:
 private:
   struct ThreadLocalPool;
 
-  struct ThreadLocalActiveClient : public Network::ConnectionCallbacks,
-                                   public Event::DeferredDeletable {
+  struct ThreadLocalActiveClient : public Network::ConnectionCallbacks {
     ThreadLocalActiveClient(ThreadLocalPool& parent) : parent_(parent) {}
 
     // Network::ConnectionCallbacks
-    void onEvent(uint32_t events) override;
+    void onEvent(Network::ConnectionEvent event) override;
+    void onAboveWriteBufferHighWatermark() override {}
+    void onBelowWriteBufferLowWatermark() override {}
 
     ThreadLocalPool& parent_;
     Upstream::HostConstSharedPtr host_;
@@ -136,35 +140,34 @@ private:
   struct ThreadLocalPool : public ThreadLocal::ThreadLocalObject {
     ThreadLocalPool(InstanceImpl& parent, Event::Dispatcher& dispatcher,
                     const std::string& cluster_name);
-
+    ~ThreadLocalPool();
     PoolRequest* makeRequest(const std::string& hash_key, const RespValue& request,
                              PoolCallbacks& callbacks);
     void onHostsRemoved(const std::vector<Upstream::HostSharedPtr>& hosts_removed);
-
-    // ThreadLocal::ThreadLocalObject
-    void shutdown() override;
 
     InstanceImpl& parent_;
     Event::Dispatcher& dispatcher_;
     Upstream::ThreadLocalCluster* cluster_;
     std::unordered_map<Upstream::HostConstSharedPtr, ThreadLocalActiveClientPtr> client_map_;
+    Common::CallbackHandle* local_host_set_member_update_cb_handle_;
   };
 
   struct LbContextImpl : public Upstream::LoadBalancerContext {
     LbContextImpl(const std::string& hash_key) : hash_key_(std::hash<std::string>()(hash_key)) {}
-
+    // TODO(danielhochman): convert to HashUtil::xxHash64 when we have a migration strategy.
     // Upstream::LoadBalancerContext
-    const Optional<uint64_t>& hashKey() const override { return hash_key_; }
+    Optional<uint64_t> hashKey() const override { return hash_key_; }
+    const Network::Connection* downstreamConnection() const override { return nullptr; }
 
     const Optional<uint64_t> hash_key_;
   };
 
   Upstream::ClusterManager& cm_;
   ClientFactory& client_factory_;
-  ThreadLocal::Instance& tls_;
-  uint32_t tls_slot_;
+  ThreadLocal::SlotPtr tls_;
   ConfigImpl config_;
 };
 
-} // ConnPool
-} // Redis
+} // namespace ConnPool
+} // namespace Redis
+} // namespace Envoy

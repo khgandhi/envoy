@@ -14,6 +14,7 @@
 #include "common/buffer/buffer_impl.h"
 #include "common/common/thread.h"
 
+namespace Envoy {
 // clang-format off
 #define FILESYSTEM_STATS(COUNTER, GAUGE)                                                           \
   COUNTER(write_buffered)                                                                          \
@@ -78,6 +79,9 @@ public:
    */
   void reopen() override;
 
+  // Fileystem::File
+  void flush() override;
+
 private:
   void doWrite(Buffer::Instance& buffer);
   void flushThreadFunc();
@@ -89,12 +93,23 @@ private:
 
   int fd_;
   std::string path_;
-  Thread::BasicLockable& flush_lock_; // This lock is used only by the flush thread when writing
-                                      // to disk. This is used to make sure that file blocks do
-                                      // not get interleaved.
-  std::mutex write_lock_; // The lock is used when filling the flush buffer. It allows multiple
-                          // threads to write to the same file at relatively high performance.
-                          // It is always local to the process.
+
+  // These locks are always acquired in the following order if multiple locks are held:
+  //    1) write_lock_
+  //    2) flush_lock_
+  //    3) file_lock_
+  Thread::BasicLockable& file_lock_; // This lock is used only by the flush thread when writing
+                                     // to disk. This is used to make sure that file blocks do
+                                     // not get interleaved by multiple processes writing to
+                                     // the same file during hot-restart.
+  std::mutex flush_lock_;            // This lock is used to prevent simulataneous flushes from
+                                     // the flush thread and a syncronous flush.  This protects
+                                     // concurrent access to the about_to_write_buffer_, fd_,
+                                     // and all other data used during flushing and file
+                                     // re-opening.
+  std::mutex write_lock_;            // The lock is used when filling the flush buffer. It allows
+                                     // multiple threads to write to the same file at relatively
+                                     // high performance.  It is always local to the process.
   Thread::ThreadPtr flush_thread_;
   std::condition_variable_any flush_event_;
   std::atomic<bool> flush_thread_exit_{};
@@ -108,7 +123,6 @@ private:
                                             // continue to fill. This buffer is then used for the
                                             // final write to disk.
   Event::TimerPtr flush_timer_;
-  Event::Dispatcher& dispatcher_;
   OsSysCalls& os_sys_calls_;
   const std::chrono::milliseconds flush_interval_msec_; // Time interval buffer gets flushed no
                                                         // matter if it reached the MIN_FLUSH_SIZE
@@ -116,4 +130,5 @@ private:
   FileSystemStats stats_;
 };
 
-} // Filesystem
+} // namespace Filesystem
+} // Envoy

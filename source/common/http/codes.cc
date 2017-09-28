@@ -11,8 +11,9 @@
 #include "common/http/headers.h"
 #include "common/http/utility.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 namespace Http {
 
 void CodeUtility::chargeBasicResponseStat(Stats::Scope& scope, const std::string& prefix,
@@ -39,33 +40,43 @@ void CodeUtility::chargeResponseStat(const ResponseStatInfo& info) {
 
   // Split stats into external vs. internal.
   if (info.internal_request_) {
-    info.cluster_scope_.counter(fmt::format("{}internal.upstream_rq_{}", info.prefix_,
-                                            group_string)).inc();
-    info.cluster_scope_.counter(fmt::format("{}internal.upstream_rq_{}", info.prefix_,
-                                            response_code)).inc();
+    info.cluster_scope_
+        .counter(fmt::format("{}internal.upstream_rq_{}", info.prefix_, group_string))
+        .inc();
+    info.cluster_scope_
+        .counter(fmt::format("{}internal.upstream_rq_{}", info.prefix_, response_code))
+        .inc();
   } else {
-    info.cluster_scope_.counter(fmt::format("{}external.upstream_rq_{}", info.prefix_,
-                                            group_string)).inc();
-    info.cluster_scope_.counter(fmt::format("{}external.upstream_rq_{}", info.prefix_,
-                                            response_code)).inc();
+    info.cluster_scope_
+        .counter(fmt::format("{}external.upstream_rq_{}", info.prefix_, group_string))
+        .inc();
+    info.cluster_scope_
+        .counter(fmt::format("{}external.upstream_rq_{}", info.prefix_, response_code))
+        .inc();
   }
 
   // Handle request virtual cluster.
   if (!info.request_vcluster_name_.empty()) {
-    info.global_store_.counter(fmt::format("vhost.{}.vcluster.{}.upstream_rq_{}",
-                                           info.request_vhost_name_, info.request_vcluster_name_,
-                                           group_string)).inc();
-    info.global_store_.counter(fmt::format("vhost.{}.vcluster.{}.upstream_rq_{}",
-                                           info.request_vhost_name_, info.request_vcluster_name_,
-                                           response_code)).inc();
+    info.global_scope_
+        .counter(fmt::format("vhost.{}.vcluster.{}.upstream_rq_{}", info.request_vhost_name_,
+                             info.request_vcluster_name_, group_string))
+        .inc();
+    info.global_scope_
+        .counter(fmt::format("vhost.{}.vcluster.{}.upstream_rq_{}", info.request_vhost_name_,
+                             info.request_vcluster_name_, response_code))
+        .inc();
   }
 
   // Handle per zone stats.
   if (!info.from_zone_.empty() && !info.to_zone_.empty()) {
-    info.cluster_scope_.counter(fmt::format("{}zone.{}.{}.upstream_rq_{}", info.prefix_,
-                                            info.from_zone_, info.to_zone_, group_string)).inc();
-    info.cluster_scope_.counter(fmt::format("{}zone.{}.{}.upstream_rq_{}", info.prefix_,
-                                            info.from_zone_, info.to_zone_, response_code)).inc();
+    info.cluster_scope_
+        .counter(fmt::format("{}zone.{}.{}.upstream_rq_{}", info.prefix_, info.from_zone_,
+                             info.to_zone_, group_string))
+        .inc();
+    info.cluster_scope_
+        .counter(fmt::format("{}zone.{}.{}.upstream_rq_{}", info.prefix_, info.from_zone_,
+                             info.to_zone_, response_code))
+        .inc();
   }
 }
 
@@ -85,7 +96,7 @@ void CodeUtility::chargeResponseTiming(const ResponseTimingInfo& info) {
   }
 
   if (!info.request_vcluster_name_.empty()) {
-    info.global_store_.deliverTimingToSinks("vhost." + info.request_vhost_name_ + ".vcluster." +
+    info.global_scope_.deliverTimingToSinks("vhost." + info.request_vhost_name_ + ".vcluster." +
                                                 info.request_vcluster_name_ + ".upstream_rq_time",
                                             info.response_time_);
   }
@@ -186,4 +197,5 @@ const char* CodeUtility::toString(Code code) {
   return "Unknown";
 }
 
-} // Http
+} // namespace Http
+} // namespace Envoy

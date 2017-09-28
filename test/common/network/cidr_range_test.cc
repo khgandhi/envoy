@@ -5,11 +5,13 @@
 
 #include "envoy/common/exception.h"
 
+#include "common/json/json_loader.h"
 #include "common/network/address_impl.h"
 #include "common/network/cidr_range.h"
+#include "common/network/utility.h"
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
-#include "spdlog/spdlog.h"
 
 // We are adding things into the std namespace.
 // Note that this is technically undefined behavior!
@@ -21,7 +23,9 @@ std::ostream& operator<<(std::ostream& out, const std::pair<First, Second>& p) {
   return out << '(' << p.first << ", " << p.second << ')';
 }
 
-} // std
+} // namespace std
+
+namespace Envoy {
 
 namespace Network {
 namespace Address {
@@ -66,7 +70,7 @@ TEST(TruncateIpAddressAndLength, Various) {
   };
   test_cases.size();
   for (const auto& kv : test_cases) {
-    InstanceConstSharedPtr inPtr = parseInternetAddress(kv.first.first);
+    InstanceConstSharedPtr inPtr = Utility::parseInternetAddress(kv.first.first);
     EXPECT_NE(inPtr, nullptr) << kv.first.first;
     int length_io = kv.first.second;
     InstanceConstSharedPtr outPtr = CidrRange::truncateIpAddressAndLength(inPtr, &length_io);
@@ -81,17 +85,155 @@ TEST(TruncateIpAddressAndLength, Various) {
   }
 }
 
+TEST(IsInRange, Various) {
+  {
+    CidrRange rng = CidrRange::create("foo");
+    EXPECT_FALSE(rng.isValid());
+    EXPECT_FALSE(rng.isInRange(Ipv4Instance("0.0.0.0")));
+  }
+
+  {
+    CidrRange rng = CidrRange::create("10.255.255.255/0");
+    EXPECT_TRUE(rng.isValid());
+    EXPECT_EQ(rng.asString(), "0.0.0.0/0");
+    EXPECT_EQ(rng.length(), 0);
+    EXPECT_EQ(rng.version(), IpVersion::v4);
+    EXPECT_TRUE(rng.isInRange(Ipv4Instance("10.255.255.255")));
+    EXPECT_TRUE(rng.isInRange(Ipv4Instance("9.255.255.255")));
+    EXPECT_TRUE(rng.isInRange(Ipv4Instance("0.0.0.0")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("::")));
+    EXPECT_FALSE(rng.isInRange(PipeInstance("foo")));
+  }
+
+  {
+    CidrRange rng = CidrRange::create("10.255.255.255/10");
+    EXPECT_TRUE(rng.isValid());
+    EXPECT_EQ(rng.asString(), "10.192.0.0/10");
+    EXPECT_EQ(rng.length(), 10);
+    EXPECT_EQ(rng.version(), IpVersion::v4);
+    EXPECT_TRUE(rng.isInRange(Ipv4Instance("10.255.255.255")));
+    EXPECT_FALSE(rng.isInRange(Ipv4Instance("9.255.255.255")));
+    EXPECT_FALSE(rng.isInRange(Ipv4Instance("0.0.0.0")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("::")));
+  }
+
+  {
+    CidrRange rng = CidrRange::create("::/0");
+    EXPECT_TRUE(rng.isValid());
+    EXPECT_EQ(rng.asString(), "::/0");
+    EXPECT_EQ(rng.length(), 0);
+    EXPECT_EQ(rng.version(), IpVersion::v6);
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance("::")));
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance("::1")));
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance("2001::")));
+    EXPECT_FALSE(rng.isInRange(Ipv4Instance("0.0.0.0")));
+    EXPECT_FALSE(rng.isInRange(PipeInstance("foo")));
+  }
+
+  {
+    CidrRange rng = CidrRange::create("::1/128");
+    EXPECT_TRUE(rng.isValid());
+    EXPECT_EQ(rng.asString(), "::1/128");
+    EXPECT_EQ(rng.length(), 128);
+    EXPECT_EQ(rng.version(), IpVersion::v6);
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance("::1")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001::")));
+    EXPECT_FALSE(rng.isInRange(Ipv4Instance("0.0.0.0")));
+  }
+
+  {
+    CidrRange rng = CidrRange::create("2001:abcd:ef01:2345:6789:abcd:ef01:234/64");
+    EXPECT_TRUE(rng.isValid());
+    EXPECT_EQ(rng.asString(), "2001:abcd:ef01:2345::/64");
+    EXPECT_EQ(rng.length(), 64);
+    EXPECT_EQ(rng.version(), IpVersion::v6);
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance("2001:abcd:ef01:2345::1")));
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance("2001:abcd:ef01:2345::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001:abcd::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001:abcd:ef01:2340::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2002::")));
+  }
+
+  {
+    CidrRange rng = CidrRange::create("2001:abcd:ef01:2345:6789:abcd:ef01:234/60");
+    EXPECT_TRUE(rng.isValid());
+    EXPECT_EQ(rng.asString(), "2001:abcd:ef01:2340::/60");
+    EXPECT_EQ(rng.length(), 60);
+    EXPECT_EQ(rng.version(), IpVersion::v6);
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance("2001:abcd:ef01:2345::")));
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance("2001:abcd:ef01:2340::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001:abcd:ef01:2330::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001:abcd::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001:abcd:ef00::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001::")));
+    EXPECT_FALSE(rng.isInRange(Ipv6Instance("2002::")));
+  }
+}
+
+TEST(CidrRangeTest, OperatorIsEqual) {
+  {
+    CidrRange rng1 = CidrRange::create("192.0.0.0/8");
+    CidrRange rng2 = CidrRange::create("192.168.0.0/16");
+    EXPECT_FALSE(rng1 == rng2);
+  }
+
+  {
+    CidrRange rng1 = CidrRange::create("192.0.0.0/8");
+    CidrRange rng2 = CidrRange::create("192.168.0.0/8");
+    EXPECT_TRUE(rng1 == rng2);
+  }
+
+  {
+    CidrRange rng1 = CidrRange::create("192.0.0.0/8");
+    CidrRange rng2 = CidrRange::create("2001::/8");
+    EXPECT_FALSE(rng1 == rng2);
+  }
+
+  {
+    CidrRange rng1 = CidrRange::create("2002::/16");
+    CidrRange rng2 = CidrRange::create("2001::/16");
+    EXPECT_FALSE(rng1 == rng2);
+  }
+
+  {
+    CidrRange rng1 = CidrRange::create("2002::/16");
+    CidrRange rng2 = CidrRange::create("192.168.0.1/16");
+    EXPECT_FALSE(rng1 == rng2);
+  }
+
+  {
+    CidrRange rng1 = CidrRange::create("2002::/16");
+    CidrRange rng2 = CidrRange::create("2002::1/16");
+    EXPECT_TRUE(rng1 == rng2);
+  }
+}
+
+TEST(CidrRangeTest, InvalidCidrRange) {
+  CidrRange rng1 = CidrRange::create("foo");
+  EXPECT_EQ(nullptr, rng1.ipv4());
+  EXPECT_EQ(nullptr, rng1.ipv6());
+  EXPECT_EQ(IpVersion::v4, rng1.version());
+  EXPECT_EQ("/-1", rng1.asString());
+  // Not equal due to invalid CidrRange.
+  EXPECT_FALSE(rng1 == rng1);
+
+  CidrRange rng2 = CidrRange::create("192.0.0.0/8");
+  EXPECT_FALSE(rng1 == rng2);
+}
+
 TEST(Ipv4CidrRangeTest, InstanceConstSharedPtrAndLengthCtor) {
-  InstanceConstSharedPtr ptr = parseInternetAddress("1.2.3.5");
+  InstanceConstSharedPtr ptr = Utility::parseInternetAddress("1.2.3.5");
   CidrRange rng(CidrRange::create(ptr, 31)); // Copy ctor.
   EXPECT_TRUE(rng.isValid());
   EXPECT_EQ(rng.length(), 31);
   EXPECT_EQ(rng.version(), IpVersion::v4);
   EXPECT_EQ(rng.asString(), "1.2.3.4/31");
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("1.2.3.3")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("1.2.3.4")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("1.2.3.5")));
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("1.2.3.6")));
+  EXPECT_FALSE(rng.isInRange(Ipv4Instance("1.2.3.3")));
+  EXPECT_TRUE(rng.isInRange(Ipv4Instance("1.2.3.4")));
+  EXPECT_TRUE(rng.isInRange(Ipv4Instance("1.2.3.5")));
+  EXPECT_FALSE(rng.isInRange(Ipv4Instance("1.2.3.6")));
 
   CidrRange rng2(CidrRange::create(ptr, -1)); // Invalid length.
   EXPECT_FALSE(rng2.isValid());
@@ -108,16 +250,15 @@ TEST(Ipv4CidrRangeTest, StringAndLengthCtor) {
   EXPECT_EQ(rng.asString(), "1.2.3.4/31");
   EXPECT_EQ(rng.length(), 31);
   EXPECT_EQ(rng.version(), IpVersion::v4);
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("1.2.3.3")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("1.2.3.4")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("1.2.3.5")));
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("1.2.3.6")));
+  EXPECT_FALSE(rng.isInRange(Ipv4Instance("1.2.3.3")));
+  EXPECT_TRUE(rng.isInRange(Ipv4Instance("1.2.3.4")));
+  EXPECT_TRUE(rng.isInRange(Ipv4Instance("1.2.3.5")));
+  EXPECT_FALSE(rng.isInRange(Ipv4Instance("1.2.3.6")));
 
   rng = CidrRange::create("1.2.3.4", -10); // Invalid length.
   EXPECT_FALSE(rng.isValid());
 
-  rng = CidrRange::create("bogus", 31); // Invalid address.
-  EXPECT_FALSE(rng.isValid());
+  EXPECT_THROW(CidrRange::create("bogus", 31), EnvoyException); // Invalid address.
 }
 
 TEST(Ipv4CidrRangeTest, StringCtor) {
@@ -126,16 +267,15 @@ TEST(Ipv4CidrRangeTest, StringCtor) {
   EXPECT_EQ(rng.asString(), "1.2.3.4/31");
   EXPECT_EQ(rng.length(), 31);
   EXPECT_EQ(rng.version(), IpVersion::v4);
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("1.2.3.3")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("1.2.3.4")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("1.2.3.5")));
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("1.2.3.6")));
+  EXPECT_FALSE(rng.isInRange(Ipv4Instance("1.2.3.3")));
+  EXPECT_TRUE(rng.isInRange(Ipv4Instance("1.2.3.4")));
+  EXPECT_TRUE(rng.isInRange(Ipv4Instance("1.2.3.5")));
+  EXPECT_FALSE(rng.isInRange(Ipv4Instance("1.2.3.6")));
 
   CidrRange rng2 = CidrRange::create("1.2.3.4/-10"); // Invalid length.
   EXPECT_FALSE(rng2.isValid());
 
-  CidrRange rng3 = CidrRange::create("bogus/31"); // Invalid address.
-  EXPECT_FALSE(rng3.isValid());
+  EXPECT_THROW(CidrRange::create("bogus/31"), EnvoyException); // Invalid address.
 
   CidrRange rng4 = CidrRange::create("/31"); // Missing address.
   EXPECT_FALSE(rng4.isValid());
@@ -150,28 +290,28 @@ TEST(Ipv4CidrRangeTest, BigRange) {
   EXPECT_EQ(rng.asString(), "10.0.0.0/8");
   EXPECT_EQ(rng.length(), 8);
   EXPECT_EQ(rng.version(), IpVersion::v4);
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("9.255.255.255")));
+  EXPECT_FALSE(rng.isInRange(Ipv4Instance("9.255.255.255")));
   std::string addr;
   for (int i = 0; i < 256; ++i) {
     addr = fmt::format("10.{}.0.1", i);
-    EXPECT_TRUE(rng.isInRange(parseInternetAddress(addr))) << addr;
+    EXPECT_TRUE(rng.isInRange(Ipv4Instance(addr))) << addr;
     addr = fmt::format("10.{}.255.255", i);
-    EXPECT_TRUE(rng.isInRange(parseInternetAddress(addr))) << addr;
+    EXPECT_TRUE(rng.isInRange(Ipv4Instance(addr))) << addr;
   }
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("11.0.0.0")));
+  EXPECT_FALSE(rng.isInRange(Ipv4Instance("11.0.0.0")));
 }
 
 TEST(Ipv6CidrRange, InstanceConstSharedPtrAndLengthCtor) {
-  InstanceConstSharedPtr ptr = parseInternetAddress("abcd::0345");
+  InstanceConstSharedPtr ptr = Utility::parseInternetAddress("abcd::0345");
   CidrRange rng(CidrRange::create(ptr, 127)); // Copy ctor.
   EXPECT_TRUE(rng.isValid());
   EXPECT_EQ(rng.length(), 127);
   EXPECT_EQ(rng.version(), IpVersion::v6);
   EXPECT_EQ(rng.asString(), "abcd::344/127");
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("abcd::343")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("abcd::344")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("abcd::345")));
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("abcd::346")));
+  EXPECT_FALSE(rng.isInRange(Ipv6Instance("abcd::343")));
+  EXPECT_TRUE(rng.isInRange(Ipv6Instance("abcd::344")));
+  EXPECT_TRUE(rng.isInRange(Ipv6Instance("abcd::345")));
+  EXPECT_FALSE(rng.isInRange(Ipv6Instance("abcd::346")));
 
   CidrRange rng2(CidrRange::create(ptr, -1)); // Invalid length.
   EXPECT_FALSE(rng2.isValid());
@@ -183,39 +323,37 @@ TEST(Ipv6CidrRange, InstanceConstSharedPtrAndLengthCtor) {
 
 TEST(Ipv6CidrRange, StringAndLengthCtor) {
   CidrRange rng;
-  rng = CidrRange::create("::ffff", 122); // Assignment operator.
+  rng = CidrRange::create("ff::ffff", 122); // Assignment operator.
   EXPECT_TRUE(rng.isValid());
-  EXPECT_EQ(rng.asString(), "::ffc0/122");
+  EXPECT_EQ(rng.asString(), "ff::ffc0/122");
   EXPECT_EQ(rng.length(), 122);
   EXPECT_EQ(rng.version(), IpVersion::v6);
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("::ffbf")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("::ffc0")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("::ffff")));
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("::1:0")));
+  EXPECT_FALSE(rng.isInRange(Ipv6Instance("ff::ffbf")));
+  EXPECT_TRUE(rng.isInRange(Ipv6Instance("ff::ffc0")));
+  EXPECT_TRUE(rng.isInRange(Ipv6Instance("ff::ffff")));
+  EXPECT_FALSE(rng.isInRange(Ipv6Instance("::1:0")));
 
   rng = CidrRange::create("::ffff", -2); // Invalid length.
   EXPECT_FALSE(rng.isValid());
 
-  rng = CidrRange::create("bogus", 122); // Invalid address.
-  EXPECT_FALSE(rng.isValid());
+  EXPECT_THROW(CidrRange::create("bogus", 122), EnvoyException); // Invalid address.
 }
 
 TEST(Ipv6CidrRange, StringCtor) {
-  CidrRange rng = CidrRange::create("::fc1f/118");
+  CidrRange rng = CidrRange::create("ff::fc1f/118");
   EXPECT_TRUE(rng.isValid());
-  EXPECT_EQ(rng.asString(), "::fc00/118");
+  EXPECT_EQ(rng.asString(), "ff::fc00/118");
   EXPECT_EQ(rng.length(), 118);
   EXPECT_EQ(rng.version(), IpVersion::v6);
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("::fbff")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("::fc00")));
-  EXPECT_TRUE(rng.isInRange(parseInternetAddress("::ffff")));
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("::1:00")));
+  EXPECT_FALSE(rng.isInRange(Ipv6Instance("ff::fbff")));
+  EXPECT_TRUE(rng.isInRange(Ipv6Instance("ff::fc00")));
+  EXPECT_TRUE(rng.isInRange(Ipv6Instance("ff::ffff")));
+  EXPECT_FALSE(rng.isInRange(Ipv6Instance("::1:00")));
 
   CidrRange rng2 = CidrRange::create("::fc1f/-10"); // Invalid length.
   EXPECT_FALSE(rng2.isValid());
 
-  CidrRange rng3 = CidrRange::create("::fc1f00/118"); // Invalid address.
-  EXPECT_FALSE(rng3.isValid());
+  EXPECT_THROW(CidrRange::create("::fc1f00/118"), EnvoyException); // Invalid address.
 
   CidrRange rng4 = CidrRange::create("/118"); // Missing address.
   EXPECT_FALSE(rng4.isValid());
@@ -231,16 +369,210 @@ TEST(Ipv6CidrRange, BigRange) {
   EXPECT_EQ(rng.asString(), "2001:db8:85a3::/64");
   EXPECT_EQ(rng.length(), 64);
   EXPECT_EQ(rng.version(), IpVersion::v6);
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("2001:0db8:85a2:ffff:ffff:ffff:ffff:ffff")));
+  EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001:0db8:85a2:ffff:ffff:ffff:ffff:ffff")));
   std::string addr;
   for (char c : std::string("0123456789abcdef")) {
     addr = fmt::format("{}:000{}::", prefix, std::string(1, c));
-    EXPECT_TRUE(rng.isInRange(parseInternetAddress(addr))) << addr << " not in " << rng.asString();
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance(addr))) << addr << " not in " << rng.asString();
     addr = fmt::format("{}:fff{}:ffff:ffff:ffff", prefix, std::string(1, c));
-    EXPECT_TRUE(rng.isInRange(parseInternetAddress(addr))) << addr << " not in " << rng.asString();
+    EXPECT_TRUE(rng.isInRange(Ipv6Instance(addr))) << addr << " not in " << rng.asString();
   }
-  EXPECT_FALSE(rng.isInRange(parseInternetAddress("2001:0db8:85a4::")));
+  EXPECT_FALSE(rng.isInRange(Ipv6Instance("2001:0db8:85a4::")));
 }
 
-} // Address
-} // Network
+TEST(IpListTest, Errors) {
+  {
+    std::string json = R"EOF(
+    {
+      "ip_white_list": ["foo"]
+    }
+    )EOF";
+
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
+  }
+
+  {
+    std::string json = R"EOF(
+    {
+      "ip_white_list": ["foo/bar"]
+    }
+    )EOF";
+
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
+  }
+
+  {
+    std::string json = R"EOF(
+    {
+      "ip_white_list": ["192.168.1.1/33"]
+    }
+    )EOF";
+
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
+  }
+
+  {
+    std::string json = R"EOF(
+    {
+      "ip_white_list": ["192.168.1.1"]
+    }
+    )EOF";
+
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
+  }
+
+  {
+    std::string json = R"EOF(
+    {
+      "ip_white_list": ["::/129"]
+    }
+    )EOF";
+
+    Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+    EXPECT_THROW({ IpList wl(*loader, "ip_white_list"); }, EnvoyException);
+  }
+}
+
+TEST(IpListTest, SpecificAddressAllowed) {
+  std::string json = R"EOF(
+  {
+    "ip_white_list": ["192.168.1.1/24"]
+  }
+  )EOF";
+
+  Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+  IpList wl(*loader, "ip_white_list");
+
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.1.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.1.3")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.1.255")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("192.168.3.0")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("192.168.0.0")));
+}
+
+TEST(IpListTest, Normal) {
+  std::string json = R"EOF(
+  {
+    "ip_white_list": [
+      "192.168.3.0/24",
+      "50.1.2.3/32",
+      "10.15.0.0/16"
+     ]
+  }
+  )EOF";
+
+  Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+  IpList wl(*loader, "ip_white_list");
+
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.3")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.255")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("192.168.2.255")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("192.168.4.0")));
+
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("50.1.2.3")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("50.1.2.2")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("50.1.2.4")));
+
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("10.15.0.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("10.15.90.90")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("10.15.255.255")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("10.14.255.255")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("10.16.0.0")));
+
+  EXPECT_FALSE(wl.contains(Address::Ipv6Instance("::1")));
+  EXPECT_FALSE(wl.contains(Address::PipeInstance("foo")));
+}
+
+TEST(IpListTest, AddressVersionMix) {
+  std::string json = R"EOF(
+  {
+    "ip_white_list": [
+      "192.168.3.0/24",
+      "2001:db8:85a3::/64",
+      "::1/128"
+     ]
+  }
+  )EOF";
+
+  Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+  IpList wl(*loader, "ip_white_list");
+
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.3")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.255")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("192.168.2.255")));
+  EXPECT_FALSE(wl.contains(Address::Ipv4Instance("192.168.4.0")));
+
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("2001:db8:85a3::")));
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("2001:db8:85a3:0:1::")));
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("2001:db8:85a3::ffff:ffff:ffff:ffff")));
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("2001:db8:85a3::ffff")));
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("2001:db8:85a3::1")));
+  EXPECT_FALSE(wl.contains(Address::Ipv6Instance("2001:db8:85a3:1::")));
+  EXPECT_FALSE(wl.contains(Address::Ipv6Instance("2002:db8:85a3::")));
+
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("::1")));
+  EXPECT_FALSE(wl.contains(Address::Ipv6Instance("::")));
+
+  EXPECT_FALSE(wl.contains(Address::PipeInstance("foo")));
+}
+
+TEST(IpListTest, MatchAny) {
+  std::string json = R"EOF(
+  {
+    "ip_white_list": [
+      "0.0.0.0/0"
+     ]
+  }
+  )EOF";
+
+  Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+  IpList wl(*loader, "ip_white_list");
+
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.3")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.255")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.0.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.0.0.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("1.1.1.1")));
+
+  EXPECT_FALSE(wl.contains(Address::Ipv6Instance("::1")));
+  EXPECT_FALSE(wl.contains(Address::PipeInstance("foo")));
+}
+
+TEST(IpListTest, MatchAnyAll) {
+  std::string json = R"EOF(
+  {
+    "ip_white_list": [
+      "0.0.0.0/0",
+      "::/0"
+     ]
+  }
+  )EOF";
+
+  Json::ObjectSharedPtr loader = Json::Factory::loadFromString(json);
+  IpList wl(*loader, "ip_white_list");
+
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.3")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.3.255")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.168.0.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("192.0.0.0")));
+  EXPECT_TRUE(wl.contains(Address::Ipv4Instance("1.1.1.1")));
+
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("::1")));
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("::")));
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("2001:db8:85a3::")));
+  EXPECT_TRUE(wl.contains(Address::Ipv6Instance("ffee::")));
+
+  EXPECT_FALSE(wl.contains(Address::PipeInstance("foo")));
+}
+
+} // namespace Address
+} // namespace Network
+} // namespace Envoy

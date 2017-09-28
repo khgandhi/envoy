@@ -4,6 +4,7 @@
 
 #include "envoy/upstream/upstream.h"
 
+namespace Envoy {
 namespace Upstream {
 
 /**
@@ -17,4 +18,5 @@ public:
   static std::string healthFlagsToString(const Host& host);
 };
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

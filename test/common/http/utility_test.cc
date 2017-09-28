@@ -1,21 +1,24 @@
 #include <cstdint>
 #include <string>
 
+#include "common/config/protocol_json.h"
 #include "common/http/exception.h"
 #include "common/http/header_map_impl.h"
 #include "common/http/utility.h"
 #include "common/network/address_impl.h"
 
+#include "test/mocks/http/mocks.h"
 #include "test/test_common/printers.h"
 #include "test/test_common/utility.h"
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
-#include "spdlog/spdlog.h"
 
+using testing::InvokeWithoutArgs;
+using testing::_;
+
+namespace Envoy {
 namespace Http {
-
-// Satisfy linker
-const uint64_t CodecOptions::NoCompression;
 
 TEST(HttpUtility, parseQueryString) {
   EXPECT_EQ(Utility::QueryParams(), Utility::parseQueryString("/hello"));
@@ -59,6 +62,21 @@ TEST(HttpUtility, isInternalRequest) {
   EXPECT_TRUE(Utility::isInternalRequest(TestHeaderMapImpl{{"x-forwarded-for", "127.0.0.1"}}));
 }
 
+TEST(HttpUtility, isWebSocketUpgradeRequest) {
+  EXPECT_FALSE(Utility::isWebSocketUpgradeRequest(TestHeaderMapImpl{}));
+  EXPECT_FALSE(Utility::isWebSocketUpgradeRequest(TestHeaderMapImpl{{"connection", "upgrade"}}));
+  EXPECT_FALSE(Utility::isWebSocketUpgradeRequest(TestHeaderMapImpl{{"upgrade", "websocket"}}));
+  EXPECT_FALSE(Utility::isWebSocketUpgradeRequest(
+      TestHeaderMapImpl{{"Connection", "close"}, {"Upgrade", "websocket"}}));
+
+  EXPECT_TRUE(Utility::isWebSocketUpgradeRequest(
+      TestHeaderMapImpl{{"Connection", "upgrade"}, {"Upgrade", "websocket"}}));
+  EXPECT_TRUE(Utility::isWebSocketUpgradeRequest(
+      TestHeaderMapImpl{{"connection", "upgrade"}, {"upgrade", "websocket"}}));
+  EXPECT_TRUE(Utility::isWebSocketUpgradeRequest(
+      TestHeaderMapImpl{{"connection", "Upgrade"}, {"upgrade", "WebSocket"}}));
+}
+
 TEST(HttpUtility, appendXff) {
   {
     TestHeaderMapImpl headers;
@@ -89,21 +107,43 @@ TEST(HttpUtility, createSslRedirectPath) {
   }
 }
 
-TEST(HttpUtility, parseCodecOptions) {
+namespace {
+
+Http2Settings parseHttp2SettingsFromJson(const std::string& json_string) {
+  envoy::api::v2::Http2ProtocolOptions http2_protocol_options;
+  auto json_object_ptr = Json::Factory::loadFromString(json_string);
+  Config::ProtocolJson::translateHttp2ProtocolOptions(
+      *json_object_ptr->getObject("http2_settings", true), http2_protocol_options);
+  return Utility::parseHttp2Settings(http2_protocol_options);
+}
+
+} // namespace
+
+TEST(HttpUtility, parseHttp2Settings) {
   {
-    Json::ObjectPtr json = Json::Factory::loadFromString("{}");
-    EXPECT_EQ(0UL, Utility::parseCodecOptions(*json));
+    auto http2_settings = parseHttp2SettingsFromJson("{}");
+    EXPECT_EQ(Http2Settings::DEFAULT_HPACK_TABLE_SIZE, http2_settings.hpack_table_size_);
+    EXPECT_EQ(Http2Settings::DEFAULT_MAX_CONCURRENT_STREAMS,
+              http2_settings.max_concurrent_streams_);
+    EXPECT_EQ(Http2Settings::DEFAULT_INITIAL_STREAM_WINDOW_SIZE,
+              http2_settings.initial_stream_window_size_);
+    EXPECT_EQ(Http2Settings::DEFAULT_INITIAL_CONNECTION_WINDOW_SIZE,
+              http2_settings.initial_connection_window_size_);
   }
 
   {
-    Json::ObjectPtr json =
-        Json::Factory::loadFromString("{\"http_codec_options\": \"no_compression\"}");
-    EXPECT_EQ(CodecOptions::NoCompression, Utility::parseCodecOptions(*json));
-  }
-
-  {
-    Json::ObjectPtr json = Json::Factory::loadFromString("{\"http_codec_options\": \"foo\"}");
-    EXPECT_THROW(Utility::parseCodecOptions(*json), EnvoyException);
+    auto http2_settings = parseHttp2SettingsFromJson(R"raw({
+                                          "http2_settings" : {
+                                            "hpack_table_size": 1,
+                                            "max_concurrent_streams": 2,
+                                            "initial_stream_window_size": 3,
+                                            "initial_connection_window_size": 4
+                                          }
+                                        })raw");
+    EXPECT_EQ(1U, http2_settings.hpack_table_size_);
+    EXPECT_EQ(2U, http2_settings.max_concurrent_streams_);
+    EXPECT_EQ(3U, http2_settings.initial_stream_window_size_);
+    EXPECT_EQ(4U, http2_settings.initial_connection_window_size_);
   }
 }
 
@@ -145,6 +185,18 @@ TEST(HttpUtility, TestParseCookie) {
   EXPECT_EQ(value, "abc123");
 }
 
+TEST(HttpUtility, TestParseCookieBadValues) {
+  TestHeaderMapImpl headers{{"cookie", "token1=abc123; = "},
+                            {"cookie", "token2=abc123;   "},
+                            {"cookie", "; token3=abc123;"},
+                            {"cookie", "=; token4=\"abc123\""}};
+
+  EXPECT_EQ(Utility::parseCookieValue(headers, "token1"), "abc123");
+  EXPECT_EQ(Utility::parseCookieValue(headers, "token2"), "abc123");
+  EXPECT_EQ(Utility::parseCookieValue(headers, "token3"), "abc123");
+  EXPECT_EQ(Utility::parseCookieValue(headers, "token4"), "abc123");
+}
+
 TEST(HttpUtility, TestParseCookieWithQuotes) {
   TestHeaderMapImpl headers{
       {"someheader", "10.0.0.1"},
@@ -158,4 +210,25 @@ TEST(HttpUtility, TestParseCookieWithQuotes) {
   EXPECT_EQ(Utility::parseCookieValue(headers, "leadingdquote"), "\"foobar");
 }
 
-} // Http
+TEST(HttpUtility, SendLocalReply) {
+  MockStreamDecoderFilterCallbacks callbacks;
+  bool is_reset = false;
+
+  EXPECT_CALL(callbacks, encodeHeaders_(_, false));
+  EXPECT_CALL(callbacks, encodeData(_, true));
+  Utility::sendLocalReply(callbacks, is_reset, Http::Code::PayloadTooLarge, "large");
+}
+
+TEST(HttpUtility, SendLocalReplyDestroyedEarly) {
+  MockStreamDecoderFilterCallbacks callbacks;
+  bool is_reset = false;
+
+  EXPECT_CALL(callbacks, encodeHeaders_(_, false)).WillOnce(InvokeWithoutArgs([&]() -> void {
+    is_reset = true;
+  }));
+  EXPECT_CALL(callbacks, encodeData(_, true)).Times(0);
+  Utility::sendLocalReply(callbacks, is_reset, Http::Code::PayloadTooLarge, "large");
+}
+
+} // namespace Http
+} // namespace Envoy

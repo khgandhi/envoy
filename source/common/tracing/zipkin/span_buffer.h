@@ -2,6 +2,7 @@
 
 #include "common/tracing/zipkin/zipkin_core_types.h"
 
+namespace Envoy {
 namespace Zipkin {
 
 /**
@@ -37,7 +38,7 @@ public:
    *
    * @return true if the span was successfully added, or false if the buffer was full.
    */
-  bool addSpan(SpanPtr&& span);
+  bool addSpan(const Span& span);
 
   /**
    * Empties the buffer. This method is supposed to be called when all buffered spans
@@ -58,6 +59,7 @@ public:
 
 private:
   // We use a pre-allocated vector to improve performance
-  std::vector<SpanPtr> span_buffer_;
+  std::vector<Span> span_buffer_;
 };
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

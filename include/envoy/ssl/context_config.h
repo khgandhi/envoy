@@ -5,6 +5,7 @@
 
 #include "envoy/common/pure.h"
 
+namespace Envoy {
 namespace Ssl {
 
 /**
@@ -61,7 +62,10 @@ public:
    * Otherwise, ""
    */
   virtual const std::string& verifyCertificateHash() const PURE;
+};
 
+class ClientContextConfig : public virtual ContextConfig {
+public:
   /**
    * @return The server name indication if it's set and ssl enabled
    * Otherwise, ""
@@ -69,4 +73,13 @@ public:
   virtual const std::string& serverNameIndication() const PURE;
 };
 
-} // Ssl
+class ServerContextConfig : public virtual ContextConfig {
+public:
+  /**
+   * @return True if client certificate is required, false otherwise.
+   */
+  virtual bool requireClientCertificate() const PURE;
+};
+
+} // namespace Ssl
+} // namespace Envoy

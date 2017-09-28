@@ -8,6 +8,7 @@
 
 #include "gmock/gmock.h"
 
+namespace Envoy {
 namespace RateLimit {
 
 class MockClient : public Client {
@@ -30,4 +31,5 @@ inline bool operator==(const Descriptor& lhs, const Descriptor& rhs) {
   return lhs.entries_ == rhs.entries_;
 }
 
-} // RateLimit
+} // namespace RateLimit
+} // namespace Envoy

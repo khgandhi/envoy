@@ -10,9 +10,10 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Invoke;
+using testing::_;
 
+namespace Envoy {
 namespace Router {
 
 TEST(ShadowWriterImplTest, All) {
@@ -58,4 +59,5 @@ TEST(ShadowWriterImplTest, All) {
   callback->onFailure(Http::AsyncClient::FailureReason::Reset);
 }
 
-} // Router
+} // namespace Router
+} // namespace Envoy

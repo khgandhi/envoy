@@ -6,6 +6,7 @@
 
 #include "envoy/common/pure.h"
 
+namespace Envoy {
 namespace Event {
 
 struct FileReadyType {
@@ -48,4 +49,5 @@ public:
 
 typedef std::unique_ptr<FileEvent> FileEventPtr;
 
-} // Event
+} // namespace Event
+} // namespace Envoy

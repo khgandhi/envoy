@@ -2,21 +2,25 @@
 
 #include <string>
 
-#include "server/configuration_impl.h"
+#include "envoy/server/filter_config.h"
 
+#include "common/config/well_known_names.h"
+
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
 /**
- * Config registration for the tcp proxy filter. @see NetworkFilterConfigFactory.
+ * Config registration for the tcp proxy filter. @see NamedNetworkFilterConfigFactory.
  */
-class TcpProxyConfigFactory : public NetworkFilterConfigFactory {
+class TcpProxyConfigFactory : public NamedNetworkFilterConfigFactory {
 public:
-  // NetworkFilterConfigFactory
-  NetworkFilterFactoryCb tryCreateFilterFactory(NetworkFilterType type, const std::string& name,
-                                                const Json::Object& config,
-                                                Server::Instance& server);
+  // NamedNetworkFilterConfigFactory
+  NetworkFilterFactoryCb createFilterFactory(const Json::Object& config,
+                                             FactoryContext& context) override;
+  std::string name() override { return Config::NetworkFilterNames::get().TCP_PROXY; }
 };
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

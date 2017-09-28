@@ -5,29 +5,27 @@
 #include "common/upstream/ring_hash_lb.h"
 #include "common/upstream/upstream_impl.h"
 
+#include "test/common/upstream/utility.h"
 #include "test/mocks/runtime/mocks.h"
 #include "test/mocks/upstream/mocks.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::NiceMock;
 using testing::Return;
+using testing::_;
 
+namespace Envoy {
 namespace Upstream {
-
-static HostSharedPtr newTestHost(Upstream::ClusterInfoConstSharedPtr cluster,
-                                 const std::string& url) {
-  return std::make_shared<HostImpl>(cluster, "", Network::Utility::resolveUrl(url), false, 1, "");
-}
 
 class TestLoadBalancerContext : public LoadBalancerContext {
 public:
   TestLoadBalancerContext(uint64_t hash_key) : hash_key_(hash_key) {}
 
   // Upstream::LoadBalancerContext
-  const Optional<uint64_t>& hashKey() const override { return hash_key_; }
+  Optional<uint64_t> hashKey() const override { return hash_key_; }
+  const Network::Connection* downstreamConnection() const override { return nullptr; }
 
   Optional<uint64_t> hash_key_;
 };
@@ -47,12 +45,12 @@ public:
 TEST_F(RingHashLoadBalancerTest, NoHost) { EXPECT_EQ(nullptr, lb_.chooseHost(nullptr)); };
 
 TEST_F(RingHashLoadBalancerTest, Basic) {
-  cluster_.hosts_ = {newTestHost(cluster_.info_, "tcp://127.0.0.1:80"),
-                     newTestHost(cluster_.info_, "tcp://127.0.0.1:81"),
-                     newTestHost(cluster_.info_, "tcp://127.0.0.1:82"),
-                     newTestHost(cluster_.info_, "tcp://127.0.0.1:83"),
-                     newTestHost(cluster_.info_, "tcp://127.0.0.1:84"),
-                     newTestHost(cluster_.info_, "tcp://127.0.0.1:85")};
+  cluster_.hosts_ = {makeTestHost(cluster_.info_, "tcp://127.0.0.1:80"),
+                     makeTestHost(cluster_.info_, "tcp://127.0.0.1:81"),
+                     makeTestHost(cluster_.info_, "tcp://127.0.0.1:82"),
+                     makeTestHost(cluster_.info_, "tcp://127.0.0.1:83"),
+                     makeTestHost(cluster_.info_, "tcp://127.0.0.1:84"),
+                     makeTestHost(cluster_.info_, "tcp://127.0.0.1:85")};
   cluster_.healthy_hosts_ = cluster_.hosts_;
 
   ON_CALL(runtime_.snapshot_, getInteger("upstream.ring_hash.min_ring_size", _))
@@ -94,6 +92,7 @@ TEST_F(RingHashLoadBalancerTest, Basic) {
     EXPECT_CALL(random_, random()).WillOnce(Return(10150910876324007730UL));
     EXPECT_EQ(cluster_.hosts_[2], lb_.chooseHost(nullptr));
   }
+  EXPECT_EQ(0UL, stats_.lb_healthy_panic_.value());
 
   cluster_.healthy_hosts_.clear();
   cluster_.runCallbacks({}, {});
@@ -101,11 +100,12 @@ TEST_F(RingHashLoadBalancerTest, Basic) {
     TestLoadBalancerContext context(0);
     EXPECT_EQ(cluster_.hosts_[5], lb_.chooseHost(&context));
   }
+  EXPECT_EQ(1UL, stats_.lb_healthy_panic_.value());
 }
 
 TEST_F(RingHashLoadBalancerTest, UnevenHosts) {
-  cluster_.hosts_ = {newTestHost(cluster_.info_, "tcp://127.0.0.1:80"),
-                     newTestHost(cluster_.info_, "tcp://127.0.0.1:81")};
+  cluster_.hosts_ = {makeTestHost(cluster_.info_, "tcp://127.0.0.1:80"),
+                     makeTestHost(cluster_.info_, "tcp://127.0.0.1:81")};
   ON_CALL(runtime_.snapshot_, getInteger("upstream.ring_hash.min_ring_size", _))
       .WillByDefault(Return(3));
   cluster_.runCallbacks({}, {});
@@ -122,8 +122,8 @@ TEST_F(RingHashLoadBalancerTest, UnevenHosts) {
     EXPECT_EQ(cluster_.hosts_[1], lb_.chooseHost(&context));
   }
 
-  cluster_.hosts_ = {newTestHost(cluster_.info_, "tcp://127.0.0.1:81"),
-                     newTestHost(cluster_.info_, "tcp://127.0.0.1:82")};
+  cluster_.hosts_ = {makeTestHost(cluster_.info_, "tcp://127.0.0.1:81"),
+                     makeTestHost(cluster_.info_, "tcp://127.0.0.1:82")};
   cluster_.runCallbacks({}, {});
 
   // This is the hash ring built using the default hash (probably murmur2) on GCC 5.4.
@@ -139,4 +139,5 @@ TEST_F(RingHashLoadBalancerTest, UnevenHosts) {
   }
 }
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

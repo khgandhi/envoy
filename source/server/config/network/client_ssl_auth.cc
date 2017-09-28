@@ -3,24 +3,20 @@
 #include <string>
 
 #include "envoy/network/connection.h"
-#include "envoy/server/instance.h"
+#include "envoy/registry/registry.h"
 
 #include "common/filter/auth/client_ssl.h"
 
+namespace Envoy {
 namespace Server {
 namespace Configuration {
 
 NetworkFilterFactoryCb
-ClientSslAuthConfigFactory::tryCreateFilterFactory(NetworkFilterType type, const std::string& name,
-                                                   const Json::Object& json_config,
-                                                   Server::Instance& server) {
-  if (type != NetworkFilterType::Read || name != "client_ssl_auth") {
-    return nullptr;
-  }
-
+ClientSslAuthConfigFactory::createFilterFactory(const Json::Object& json_config,
+                                                FactoryContext& context) {
   Filter::Auth::ClientSsl::ConfigSharedPtr config(Filter::Auth::ClientSsl::Config::create(
-      json_config, server.threadLocal(), server.clusterManager(), server.dispatcher(),
-      server.stats(), server.random()));
+      json_config, context.threadLocal(), context.clusterManager(), context.dispatcher(),
+      context.scope(), context.random()));
   return [config](Network::FilterManager& filter_manager) -> void {
     filter_manager.addReadFilter(
         Network::ReadFilterSharedPtr{new Filter::Auth::ClientSsl::Instance(config)});
@@ -28,9 +24,11 @@ ClientSslAuthConfigFactory::tryCreateFilterFactory(NetworkFilterType type, const
 }
 
 /**
- * Static registration for the client SSL auth filter. @see RegisterNetworkFilterConfigFactory.
+ * Static registration for the client SSL auth filter. @see RegisterFactory.
  */
-static RegisterNetworkFilterConfigFactory<ClientSslAuthConfigFactory> registered_;
+static Registry::RegisterFactory<ClientSslAuthConfigFactory, NamedNetworkFilterConfigFactory>
+    registered_;
 
-} // Configuration
-} // Server
+} // namespace Configuration
+} // namespace Server
+} // namespace Envoy

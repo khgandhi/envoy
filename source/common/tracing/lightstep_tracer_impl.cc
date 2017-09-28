@@ -10,16 +10,40 @@
 #include "common/http/message_impl.h"
 #include "common/tracing/http_tracer_impl.h"
 
-#include "spdlog/spdlog.h"
+#include "fmt/format.h"
 
+namespace Envoy {
 namespace Tracing {
 
-LightStepSpan::LightStepSpan(lightstep::Span& span) : span_(span) {}
+LightStepSpan::LightStepSpan(lightstep::Span& span, lightstep::Tracer& tracer)
+    : span_(span), tracer_(tracer) {}
 
-void LightStepSpan::finishSpan() { span_.Finish(); }
+void LightStepSpan::finishSpan(SpanFinalizer& finalizer) {
+  finalizer.finalize(*this);
+  span_.Finish();
+}
+
+void LightStepSpan::setOperation(const std::string& operation) {
+  span_.SetOperationName(operation);
+}
 
 void LightStepSpan::setTag(const std::string& name, const std::string& value) {
   span_.SetTag(name, value);
+}
+
+void LightStepSpan::injectContext(Http::HeaderMap& request_headers) {
+  lightstep::BinaryCarrier ctx;
+  tracer_.Inject(context(), lightstep::CarrierFormat::LightStepBinaryCarrier,
+                 lightstep::ProtoWriter(&ctx));
+  const std::string current_span_context = ctx.SerializeAsString();
+  request_headers.insertOtSpanContext().value(
+      Base64::encode(current_span_context.c_str(), current_span_context.length()));
+}
+
+SpanPtr LightStepSpan::spawnChild(const Config&, const std::string& name, SystemTime start_time) {
+  lightstep::Span ls_span = tracer_.StartSpan(
+      name, {lightstep::ChildOf(span_.context()), lightstep::StartTimestamp(start_time)});
+  return SpanPtr{new LightStepSpan(ls_span, tracer_)};
 }
 
 LightStepRecorder::LightStepRecorder(const lightstep::TracerImpl& tracer, LightStepDriver& driver,
@@ -88,11 +112,11 @@ LightStepDriver::TlsLightStepTracer::TlsLightStepTracer(lightstep::Tracer tracer
 
 LightStepDriver::LightStepDriver(const Json::Object& config,
                                  Upstream::ClusterManager& cluster_manager, Stats::Store& stats,
-                                 ThreadLocal::Instance& tls, Runtime::Loader& runtime,
+                                 ThreadLocal::SlotAllocator& tls, Runtime::Loader& runtime,
                                  std::unique_ptr<lightstep::TracerOptions> options)
-    : cm_(cluster_manager),
-      tracer_stats_{LIGHTSTEP_TRACER_STATS(POOL_COUNTER_PREFIX(stats, "tracing.lightstep."))},
-      tls_(tls), runtime_(runtime), options_(std::move(options)), tls_slot_(tls.allocateSlot()) {
+    : cm_(cluster_manager), tracer_stats_{LIGHTSTEP_TRACER_STATS(
+                                POOL_COUNTER_PREFIX(stats, "tracing.lightstep."))},
+      tls_(tls.allocateSlot()), runtime_(runtime), options_(std::move(options)) {
   Upstream::ThreadLocalCluster* cluster = cm_.get(config.getString("collector_cluster"));
   if (!cluster) {
     throw EnvoyException(fmt::format("{} collector cluster is not defined on cluster manager level",
@@ -105,20 +129,19 @@ LightStepDriver::LightStepDriver(const Json::Object& config,
         fmt::format("{} collector cluster must support http2 for gRPC calls", cluster_->name()));
   }
 
-  tls_.set(tls_slot_,
-           [this](Event::Dispatcher& dispatcher) -> ThreadLocal::ThreadLocalObjectSharedPtr {
-             lightstep::Tracer tracer(lightstep::NewUserDefinedTransportLightStepTracer(
-                 *options_, std::bind(&LightStepRecorder::NewInstance, std::ref(*this),
-                                      std::ref(dispatcher), std::placeholders::_1)));
+  tls_->set([this](Event::Dispatcher& dispatcher) -> ThreadLocal::ThreadLocalObjectSharedPtr {
+    lightstep::Tracer tracer(lightstep::NewUserDefinedTransportLightStepTracer(
+        *options_, std::bind(&LightStepRecorder::NewInstance, std::ref(*this), std::ref(dispatcher),
+                             std::placeholders::_1)));
 
-             return ThreadLocal::ThreadLocalObjectSharedPtr{
-                 new TlsLightStepTracer(std::move(tracer), *this)};
-           });
+    return ThreadLocal::ThreadLocalObjectSharedPtr{
+        new TlsLightStepTracer(std::move(tracer), *this)};
+  });
 }
 
-SpanPtr LightStepDriver::startSpan(Http::HeaderMap& request_headers,
+SpanPtr LightStepDriver::startSpan(const Config&, Http::HeaderMap& request_headers,
                                    const std::string& operation_name, SystemTime start_time) {
-  lightstep::Tracer& tracer = *tls_.getTyped<TlsLightStepTracer>(tls_slot_).tracer_;
+  lightstep::Tracer& tracer = *tls_->getTyped<TlsLightStepTracer>().tracer_;
   LightStepSpanPtr active_span;
 
   if (request_headers.OtSpanContext()) {
@@ -133,20 +156,12 @@ SpanPtr LightStepDriver::startSpan(Http::HeaderMap& request_headers,
     lightstep::Span ls_span =
         tracer.StartSpan(operation_name, {lightstep::ChildOf(parent_span_ctx),
                                           lightstep::StartTimestamp(start_time)});
-    active_span.reset(new LightStepSpan(ls_span));
+    active_span.reset(new LightStepSpan(ls_span, tracer));
   } else {
     lightstep::Span ls_span =
         tracer.StartSpan(operation_name, {lightstep::StartTimestamp(start_time)});
-    active_span.reset(new LightStepSpan(ls_span));
+    active_span.reset(new LightStepSpan(ls_span, tracer));
   }
-
-  // Inject newly created span context into HTTP carrier.
-  lightstep::BinaryCarrier ctx;
-  tracer.Inject(active_span->context(), lightstep::CarrierFormat::LightStepBinaryCarrier,
-                lightstep::ProtoWriter(&ctx));
-  const std::string current_span_context = ctx.SerializeAsString();
-  request_headers.insertOtSpanContext().value(
-      Base64::encode(current_span_context.c_str(), current_span_context.length()));
 
   return std::move(active_span);
 }
@@ -168,4 +183,5 @@ void LightStepRecorder::onSuccess(Http::MessagePtr&& msg) {
   }
 }
 
-} // Tracing
+} // namespace Tracing
+} // namespace Envoy

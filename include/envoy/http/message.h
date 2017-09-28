@@ -6,6 +6,7 @@
 #include "envoy/buffer/buffer.h"
 #include "envoy/http/header_map.h"
 
+namespace Envoy {
 namespace Http {
 
 /**
@@ -45,4 +46,5 @@ public:
 
 typedef std::unique_ptr<Message> MessagePtr;
 
-} // Http
+} // namespace Http
+} // namespace Envoy

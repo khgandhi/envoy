@@ -8,10 +8,11 @@
 #include "envoy/router/router.h"
 #include "envoy/router/router_ratelimit.h"
 
+#include "common/config/rds_json.h"
 #include "common/http/filter/ratelimit.h"
-#include "common/json/json_validator.h"
 #include "common/router/config_utility.h"
 
+namespace Envoy {
 namespace Router {
 
 /**
@@ -20,7 +21,7 @@ namespace Router {
 class SourceClusterAction : public RateLimitAction {
 public:
   // Router::RateLimitAction
-  bool populateDescriptor(const Router::RouteEntry& route, ::RateLimit::Descriptor& descriptor,
+  bool populateDescriptor(const Router::RouteEntry& route, RateLimit::Descriptor& descriptor,
                           const std::string& local_service_cluster, const Http::HeaderMap& headers,
                           const std::string& remote_address) const override;
 };
@@ -31,22 +32,21 @@ public:
 class DestinationClusterAction : public RateLimitAction {
 public:
   // Router::RateLimitAction
-  bool populateDescriptor(const Router::RouteEntry& route, ::RateLimit::Descriptor& descriptor,
+  bool populateDescriptor(const Router::RouteEntry& route, RateLimit::Descriptor& descriptor,
                           const std::string& local_service_cluster, const Http::HeaderMap& headers,
                           const std::string& remote_address) const override;
 };
 
 /**
-* Action for request headers rate limiting.
-*/
+ * Action for request headers rate limiting.
+ */
 class RequestHeadersAction : public RateLimitAction {
 public:
-  RequestHeadersAction(const Json::Object& action)
-      : header_name_(action.getString("header_name")),
-        descriptor_key_(action.getString("descriptor_key")) {}
+  RequestHeadersAction(const envoy::api::v2::RateLimit::Action::RequestHeaders& action)
+      : header_name_(action.header_name()), descriptor_key_(action.descriptor_key()) {}
 
   // Router::RateLimitAction
-  bool populateDescriptor(const Router::RouteEntry& route, ::RateLimit::Descriptor& descriptor,
+  bool populateDescriptor(const Router::RouteEntry& route, RateLimit::Descriptor& descriptor,
                           const std::string& local_service_cluster, const Http::HeaderMap& headers,
                           const std::string& remote_address) const override;
 
@@ -61,7 +61,7 @@ private:
 class RemoteAddressAction : public RateLimitAction {
 public:
   // Router::RateLimitAction
-  bool populateDescriptor(const Router::RouteEntry& route, ::RateLimit::Descriptor& descriptor,
+  bool populateDescriptor(const Router::RouteEntry& route, RateLimit::Descriptor& descriptor,
                           const std::string& local_service_cluster, const Http::HeaderMap& headers,
                           const std::string& remote_address) const override;
 };
@@ -71,11 +71,11 @@ public:
  */
 class GenericKeyAction : public RateLimitAction {
 public:
-  GenericKeyAction(const Json::Object& action)
-      : descriptor_value_(action.getString("descriptor_value")) {}
+  GenericKeyAction(const envoy::api::v2::RateLimit::Action::GenericKey& action)
+      : descriptor_value_(action.descriptor_value()) {}
 
   // Router::RateLimitAction
-  bool populateDescriptor(const Router::RouteEntry& route, ::RateLimit::Descriptor& descriptor,
+  bool populateDescriptor(const Router::RouteEntry& route, RateLimit::Descriptor& descriptor,
                           const std::string& local_service_cluster, const Http::HeaderMap& headers,
                           const std::string& remote_address) const override;
 
@@ -88,10 +88,10 @@ private:
  */
 class HeaderValueMatchAction : public RateLimitAction {
 public:
-  HeaderValueMatchAction(const Json::Object& action);
+  HeaderValueMatchAction(const envoy::api::v2::RateLimit::Action::HeaderValueMatch& action);
 
   // Router::RateLimitAction
-  bool populateDescriptor(const Router::RouteEntry& route, ::RateLimit::Descriptor& descriptor,
+  bool populateDescriptor(const Router::RouteEntry& route, RateLimit::Descriptor& descriptor,
                           const std::string& local_service_cluster, const Http::HeaderMap& headers,
                           const std::string& remote_address) const override;
 
@@ -104,15 +104,15 @@ private:
 /*
  * Implementation of RateLimitPolicyEntry that holds the action for the configuration.
  */
-class RateLimitPolicyEntryImpl : public RateLimitPolicyEntry, Json::Validator {
+class RateLimitPolicyEntryImpl : public RateLimitPolicyEntry {
 public:
-  RateLimitPolicyEntryImpl(const Json::Object& config);
+  RateLimitPolicyEntryImpl(const envoy::api::v2::RateLimit& config);
 
   // Router::RateLimitPolicyEntry
   uint64_t stage() const override { return stage_; }
   const std::string& disableKey() const override { return disable_key_; }
   void populateDescriptors(const Router::RouteEntry& route,
-                           std::vector<::RateLimit::Descriptor>& descriptors,
+                           std::vector<Envoy::RateLimit::Descriptor>& descriptors,
                            const std::string& local_service_cluster, const Http::HeaderMap&,
                            const std::string& remote_address) const override;
 
@@ -127,7 +127,7 @@ private:
  */
 class RateLimitPolicyImpl : public RateLimitPolicy {
 public:
-  RateLimitPolicyImpl(const Json::Object& config);
+  RateLimitPolicyImpl(const Protobuf::RepeatedPtrField<envoy::api::v2::RateLimit>& rate_limits);
 
   // Router::RateLimitPolicy
   const std::vector<std::reference_wrapper<const RateLimitPolicyEntry>>&
@@ -144,4 +144,5 @@ private:
   static const uint64_t MAX_STAGE_NUMBER;
 };
 
-} // Router
+} // namespace Router
+} // namespace Envoy

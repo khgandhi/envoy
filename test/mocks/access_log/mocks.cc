@@ -3,9 +3,10 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::Return;
+using testing::_;
 
+namespace Envoy {
 namespace AccessLog {
 
 MockAccessLogManager::MockAccessLogManager() {
@@ -14,4 +15,5 @@ MockAccessLogManager::MockAccessLogManager() {
 
 MockAccessLogManager::~MockAccessLogManager() {}
 
-} // AccessLog
+} // namespace AccessLog
+} // namespace Envoy

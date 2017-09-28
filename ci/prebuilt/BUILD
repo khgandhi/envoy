@@ -36,6 +36,16 @@ cc_library(
 )
 
 cc_library(
+    name = "fmtlib",
+    hdrs = glob([
+        "thirdparty/fmtlib/fmt/*.cc",
+        "thirdparty/fmtlib/fmt/*.h",
+    ]),
+    defines = ["FMT_HEADER_ONLY"],
+    includes = ["thirdparty/fmtlib"],
+)
+
+cc_library(
     name = "googletest",
     srcs = [
         "thirdparty_build/lib/libgmock.a",
@@ -90,17 +100,19 @@ filegroup(
 
 cc_library(
     name = "rapidjson",
-    hdrs = glob(["thirdparty/rapidjson-1.1.0/include/**/*.h"]),
-    includes = ["thirdparty/rapidjson-1.1.0/include"],
+    hdrs = glob(["thirdparty/rapidjson/include/**/*.h"]),
+    includes = ["thirdparty/rapidjson/include"],
 )
 
 cc_library(
     name = "spdlog",
     hdrs = glob([
-        "thirdparty/spdlog-0.11.0/include/**/*.cc",
-        "thirdparty/spdlog-0.11.0/include/**/*.h",
+        "thirdparty/spdlog/include/**/*.cc",
+        "thirdparty/spdlog/include/**/*.h",
     ]),
-    includes = ["thirdparty/spdlog-0.11.0/include"],
+    defines = ["SPDLOG_FMT_EXTERNAL"],
+    includes = ["thirdparty/spdlog/include"],
+    deps = ["fmtlib"],
 )
 
 cc_library(
@@ -111,8 +123,8 @@ cc_library(
 
 cc_library(
     name = "tclap",
-    hdrs = glob(["thirdparty/tclap-1.2.1/include/**/*.h"]),
-    includes = ["thirdparty/tclap-1.2.1/include"],
+    hdrs = glob(["thirdparty/tclap/include/**/*.h"]),
+    includes = ["thirdparty/tclap/include"],
 )
 
 cc_library(
@@ -120,4 +132,27 @@ cc_library(
     srcs = ["thirdparty_build/lib/libtcmalloc_and_profiler.a"],
     hdrs = glob(["thirdparty_build/include/gperftools/**/*.h"]),
     strip_include_prefix = "thirdparty_build/include",
+)
+
+cc_library(
+    name = "xxhash",
+    srcs = ["thirdparty_build/lib/xxhash.a"],
+    hdrs = ["thirdparty_build/include/xxhash.h"],
+    includes = ["thirdparty_build/include"],
+)
+
+cc_library(
+    name = "yaml_cpp",
+    srcs = ["thirdparty_build/lib/libyaml-cpp.a"],
+    hdrs = glob(["thirdparty_build/include/yaml-cpp/**/*.h"]),
+    includes = ["thirdparty_build/include"],
+)
+
+cc_library(
+    name = "zlib",
+    srcs = ["thirdparty_build/lib/libz.a"],
+    hdrs = [
+        "thirdparty_build/include/zconf.h",
+        "thirdparty_build/include/zlib.h",
+    ],
 )

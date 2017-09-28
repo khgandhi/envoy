@@ -10,12 +10,13 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using testing::_;
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnPointee;
 using testing::ReturnRef;
+using testing::_;
 
+namespace Envoy {
 namespace Grpc {
 
 class GrpcHttp1BridgeFilterTest : public testing::Test {
@@ -25,6 +26,8 @@ public:
     filter_.setEncoderFilterCallbacks(encoder_callbacks_);
     ON_CALL(decoder_callbacks_.request_info_, protocol()).WillByDefault(ReturnPointee(&protocol_));
   }
+
+  ~GrpcHttp1BridgeFilterTest() { filter_.onDestroy(); }
 
   NiceMock<Upstream::MockClusterManager> cm_;
   Http1BridgeFilter filter_;
@@ -141,7 +144,7 @@ TEST_F(GrpcHttp1BridgeFilterTest, HandlingNormalResponse) {
   EXPECT_EQ(Http::FilterTrailersStatus::Continue, filter_.decodeTrailers(request_trailers));
 
   Buffer::InstancePtr buffer(new Buffer::OwnedImpl("hello"));
-  ON_CALL(encoder_callbacks_, encodingBuffer()).WillByDefault(ReturnRef(buffer));
+  ON_CALL(encoder_callbacks_, encodingBuffer()).WillByDefault(Return(buffer.get()));
 
   Http::TestHeaderMapImpl response_headers{{":status", "200"}};
   EXPECT_EQ(Http::FilterHeadersStatus::StopIteration,
@@ -175,4 +178,5 @@ TEST_F(GrpcHttp1BridgeFilterTest, HandlingBadGrpcStatus) {
   EXPECT_EQ("foo", response_headers.get_("grpc-message"));
 }
 
-} // Grpc
+} // namespace Grpc
+} // namespace Envoy

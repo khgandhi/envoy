@@ -4,6 +4,7 @@
 
 #include "common/common/singleton.h"
 
+namespace Envoy {
 namespace Zipkin {
 
 class ZipkinCoreConstantValues {
@@ -12,12 +13,6 @@ public:
   const std::string CLIENT_RECV = "cr";
   const std::string SERVER_SEND = "ss";
   const std::string SERVER_RECV = "sr";
-  const std::string WIRE_SEND = "ws";
-  const std::string WIRE_RECV = "wr";
-  const std::string CLIENT_SEND_FRAGMENT = "csf";
-  const std::string CLIENT_RECV_FRAGMENT = "crf";
-  const std::string SERVER_SEND_FRAGMENT = "ssf";
-  const std::string SERVER_RECV_FRAGMENT = "srf";
 
   const std::string HTTP_HOST = "http.host";
   const std::string HTTP_METHOD = "http.method";
@@ -38,8 +33,13 @@ public:
   const std::string X_B3_PARENT_SPAN_ID = "X-B3-ParentSpanId";
   const std::string X_B3_SAMPLED = "X-B3-Sampled";
   const std::string X_B3_FLAGS = "X-B3-Flags";
+
+  const std::string ALWAYS_SAMPLE = "1";
+
+  const std::string DEFAULT_COLLECTOR_ENDPOINT = "/api/v1/spans";
 };
 
 typedef ConstSingleton<ZipkinCoreConstantValues> ZipkinCoreConstants;
 
-} // Zipkin
+} // namespace Zipkin
+} // namespace Envoy

@@ -6,6 +6,7 @@
 
 #include "gtest/gtest.h"
 
+namespace Envoy {
 namespace Mongo {
 
 TEST(QueryMessageInfoTest, FindCommand) {
@@ -188,4 +189,5 @@ TEST(QueryMessageInfoTest, Command) {
   }
 }
 
-} // Mongo
+} // namespace Mongo
+} // namespace Envoy

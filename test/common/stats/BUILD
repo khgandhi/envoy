@@ -23,11 +23,25 @@ envoy_cc_test(
         "//source/common/stats:statsd_lib",
         "//source/common/upstream:upstream_includes",
         "//source/common/upstream:upstream_lib",
+        "//test/common/upstream:utility_lib",
         "//test/mocks/buffer:buffer_mocks",
         "//test/mocks/local_info:local_info_mocks",
         "//test/mocks/network:network_mocks",
         "//test/mocks/thread_local:thread_local_mocks",
         "//test/mocks/upstream:upstream_mocks",
+    ],
+)
+
+envoy_cc_test(
+    name = "udp_statsd_test",
+    srcs = ["udp_statsd_test.cc"],
+    deps = [
+        "//source/common/network:address_lib",
+        "//source/common/network:utility_lib",
+        "//source/common/stats:statsd_lib",
+        "//test/mocks/thread_local:thread_local_mocks",
+        "//test/test_common:environment_lib",
+        "//test/test_common:network_utility_lib",
     ],
 )
 
@@ -39,5 +53,6 @@ envoy_cc_test(
         "//test/mocks/event:event_mocks",
         "//test/mocks/stats:stats_mocks",
         "//test/mocks/thread_local:thread_local_mocks",
+        "//test/test_common:utility_lib",
     ],
 )

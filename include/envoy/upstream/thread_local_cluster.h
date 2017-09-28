@@ -1,5 +1,6 @@
 #pragma once
 
+namespace Envoy {
 namespace Upstream {
 
 /**
@@ -30,4 +31,5 @@ public:
   virtual LoadBalancer& loadBalancer() PURE;
 };
 
-} // Upstream
+} // namespace Upstream
+} // namespace Envoy

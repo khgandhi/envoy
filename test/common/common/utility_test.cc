@@ -5,7 +5,12 @@
 
 #include "common/common/utility.h"
 
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
+
+using testing::ContainerEq;
+
+namespace Envoy {
 
 TEST(StringUtil, atoul) {
   uint64_t out;
@@ -115,6 +120,34 @@ TEST(StringUtil, split) {
   EXPECT_EQ(std::vector<std::string>{"hello"}, StringUtil::split("hello, ", ", "));
   EXPECT_EQ(std::vector<std::string>{}, StringUtil::split(",,", ","));
   EXPECT_EQ(std::vector<std::string>{"hello"}, StringUtil::split("hello", ""));
+
+  EXPECT_THAT(std::vector<std::string>({"hello", "world"}),
+              ContainerEq(StringUtil::split("hello world", " ")));
+  EXPECT_THAT(std::vector<std::string>({"hello", "world"}),
+              ContainerEq(StringUtil::split("hello   world", " ")));
+
+  EXPECT_THAT(std::vector<std::string>({"", "", "hello", "world"}),
+              ContainerEq(StringUtil::split("  hello world", " ", true)));
+  EXPECT_THAT(std::vector<std::string>({"hello", "world", ""}),
+              ContainerEq(StringUtil::split("hello world ", " ", true)));
+  EXPECT_THAT(std::vector<std::string>({"hello", "world"}),
+              ContainerEq(StringUtil::split("hello world", " ", true)));
+  EXPECT_THAT(std::vector<std::string>({"hello", "", "", "world"}),
+              ContainerEq(StringUtil::split("hello   world", " ", true)));
+}
+
+TEST(StringUtil, join) {
+  EXPECT_EQ("hello,world", StringUtil::join({"hello", "world"}, ","));
+  EXPECT_EQ("hello", StringUtil::join({"hello"}, ","));
+  EXPECT_EQ("", StringUtil::join({}, ","));
+
+  EXPECT_EQ("helloworld", StringUtil::join({"hello", "world"}, ""));
+  EXPECT_EQ("hello", StringUtil::join({"hello"}, ""));
+  EXPECT_EQ("", StringUtil::join({}, ""));
+
+  EXPECT_EQ("hello,,world", StringUtil::join({"hello", "world"}, ",,"));
+  EXPECT_EQ("hello", StringUtil::join({"hello"}, ",,"));
+  EXPECT_EQ("", StringUtil::join({}, ",,"));
 }
 
 TEST(StringUtil, endsWith) {
@@ -147,3 +180,12 @@ TEST(StringUtil, escape) {
   EXPECT_EQ(StringUtil::escape("\t\nworld\r\n"), "\\t\\nworld\\r\\n");
   EXPECT_EQ(StringUtil::escape("{\"linux\": \"penguin\"}"), "{\\\"linux\\\": \\\"penguin\\\"}");
 }
+
+TEST(StringUtil, toUpper) {
+  EXPECT_EQ(StringUtil::toUpper(""), "");
+  EXPECT_EQ(StringUtil::toUpper("a"), "A");
+  EXPECT_EQ(StringUtil::toUpper("Ba"), "BA");
+  EXPECT_EQ(StringUtil::toUpper("X asdf aAf"), "X ASDF AAF");
+}
+
+} // namespace Envoy
